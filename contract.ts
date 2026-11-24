@@ -300,6 +300,20 @@ export const rpcContract = defineRpcContract({
     }).strict(),
     output: specialThreadSchema,
   },
+  special_thread_create: {
+    input: z.object({
+      botId: id,
+      name: z.string().trim().min(1).max(80),
+      icon: z.enum(SPECIAL_THREAD_ICON_IDS),
+      color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+      instruction: z.string().trim().min(1).max(4000),
+      rolePrompt: z.string().trim().max(4000).optional(),
+    }).strict(),
+    output: z.object({
+      threadId: id,
+      special: specialThreadSchema,
+    }).strict(),
+  },
   special_thread_remove: {
     input: z.object({ threadId: id }).strict(),
     output: z.object({ ok: z.literal(true) }).strict(),

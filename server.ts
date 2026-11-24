@@ -450,32 +450,70 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
       },
     });
 
-    // @ mentions for project bots and unaffiliated bots
+    // @ mentions for project bots, unaffiliated bots, and ONLY the current project's own Special threads
     bb.ui.registerMentionProvider({
       id: "project-bots",
       label: "Project Bots",
       triggers: ["@"],
-      async search({ trigger, query }) {
+      async search({ trigger, query, projectId }) {
         if (trigger !== "@") return [];
         const needle = query.trim().toLowerCase();
         const bots = await listAllBots(bb, store);
-        return bots
-          .filter(
-            (b) =>
-              !needle ||
-              b.name.toLowerCase().includes(needle) ||
-              b.role.toLowerCase().includes(needle) ||
-              b.id.toLowerCase().includes(needle),
-          )
-          .slice(0, 30)
-          .map((b) => ({
-            id: b.id,
-            title: b.name,
-            subtitle: `${b.kind === "unaffiliated" ? "Coordinator" : "Project Bot"} · ${b.id}`,
-            icon: "Bot",
-          }));
+        const items: Array<{ id: string; title: string; subtitle: string; icon: string }> = [];
+
+        // Include ONLY the current project's own Special threads (never leak other projects' Special threads)
+        if (projectId) {
+          const currentProjectBot = bots.find(
+            (b) => b.kind === "project" && b.projectId === projectId,
+          );
+          if (currentProjectBot) {
+            const specials = store.listSpecialThreadsForBot(currentProjectBot.id);
+            for (const s of specials) {
+              if (
+                !needle ||
+                s.name.toLowerCase().includes(needle) ||
+                s.threadId.toLowerCase().includes(needle)
+              ) {
+                items.push({
+                  id: `special:${s.threadId}`,
+                  title: s.name,
+                  subtitle: `Special thread · ${currentProjectBot.name}`,
+                  icon: "Sparkles",
+                });
+              }
+            }
+          }
+        }
+
+        for (const b of bots) {
+          if (
+            !needle ||
+            b.name.toLowerCase().includes(needle) ||
+            b.role.toLowerCase().includes(needle) ||
+            b.id.toLowerCase().includes(needle)
+          ) {
+            items.push({
+              id: b.id,
+              title: b.name,
+              subtitle: `${b.kind === "unaffiliated" ? "Coordinator" : "Project Bot"} · ${b.id}`,
+              icon: "Bot",
+            });
+          }
+        }
+        return items.slice(0, 30);
       },
       async resolve(itemId) {
+        if (itemId.startsWith("special:")) {
+          const threadId = itemId.slice("special:".length);
+          const special = store.getSpecialThread(threadId);
+          if (!special) throw new Error(`Special thread ${threadId} not found.`);
+          return {
+            context: [
+              `Referenced project-specific Special thread: ${special.name} (threadId: ${special.threadId}).`,
+              `To message ${special.name} from within this project, call \`message({ to: "${special.threadId}", text: "..." })\` (or \`to: "${special.name}"\`). Messages from other projects are rejected.`,
+            ].join("\n"),
+          };
+        }
         const bots = await listAllBots(bb, store);
         const bot = bots.find((b) => b.id === itemId);
         if (!bot) throw new Error(`Bot ${itemId} not found.`);
@@ -557,6 +595,9 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
         if (!resolved) {
           throw new Error(`Thread "${input.threadId}" does not belong to any bot.`);
         }
+        if (resolved.kind !== "project") {
+          throw new Error("Special threads are project-specific and can only be created on project bots.");
+        }
         if (resolved.bot.id !== input.botId) {
           throw new Error(
             `Thread "${input.threadId}" belongs to bot "${resolved.bot.name}" (${resolved.bot.id}), not "${input.botId}".`,
@@ -568,6 +609,52 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
         });
         publish();
         return record;
+      },
+
+      special_thread_create: async (input) => {
+        const projects = await listStandardProjects(bb);
+        const matched = projects.find((project) => {
+          const bot = store.readProjectBot(project);
+          return bot.id === input.botId || project.id === input.botId;
+        });
+        if (!matched) {
+          throw new Error(
+            "Special threads are project-specific and can only be created on project bots.",
+          );
+        }
+        const { bot } = store.ensureProjectBot(matched);
+        const lowerName = input.name.trim().toLowerCase();
+        const duplicate = store
+          .listSpecialThreadsForBot(bot.id)
+          .find((s) => s.name.toLowerCase() === lowerName);
+        if (duplicate) {
+          throw new Error(
+            `A Special thread named "${duplicate.name}" (${duplicate.threadId}) already exists on this bot. Pick a unique name.`,
+          );
+        }
+
+        const trimmedName = input.name.trim();
+        const rolePart = input.rolePrompt?.trim()
+          ? `\n\n${input.rolePrompt.trim()}`
+          : "";
+        const thread = await bb.sdk.threads.spawn({
+          projectId: matched.id,
+          environment: { type: "project-default" },
+          title: trimmedName,
+          prompt: `You have been created as the **${trimmedName}** Special thread for ${matched.name}.${rolePart}\n\nAcknowledge briefly that you are ready.`,
+        });
+        const { record } = store.setSpecialThread({
+          threadId: thread.id,
+          botId: bot.id,
+          name: trimmedName,
+          icon: input.icon,
+          color: input.color,
+          instruction: input.instruction,
+          rolePrompt: input.rolePrompt,
+        });
+        store.rememberViewed(bot.id, thread.id);
+        publish();
+        return { threadId: thread.id, special: record };
       },
 
       special_thread_remove: async ({ threadId }) => {

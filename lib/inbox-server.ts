@@ -634,6 +634,15 @@ export function createInboxService(
       if (to === ctx.threadId) {
         return errorResult("Cannot send a message to your own thread.");
       }
+      const senderBot = await resolveBotSummary(ctx.threadId);
+      const targetSpecial = store.getSpecialThread(to);
+      if (targetSpecial) {
+        if (!senderBot || senderBot.kind !== "project" || senderBot.id !== targetSpecial.botId) {
+          return errorResult(
+            `Special thread "${targetSpecial.name}" (${targetSpecial.threadId}) is project-specific and cannot be messaged from another project.`,
+          );
+        }
+      }
       try {
         const targetThread = (await bb.sdk.threads.get({ threadId: to })) as {
           archivedAt?: number | null;
@@ -650,7 +659,6 @@ export function createInboxService(
           `Thread "${to}" not found: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      const senderBot = await resolveBotSummary(ctx.threadId);
       const framed = formatDirectThreadMessage(ctx.threadId, senderBot, text);
       try {
         await bb.sdk.threads.send({
@@ -671,10 +679,10 @@ export function createInboxService(
       });
     }
 
-    // 4. Special thread name match on the sender's own bot (e.g. to: "Lander")
+    // 4. Special thread name match on the sender's own project bot (e.g. to: "Lander")
     const senderBot = await resolveBotSummary(ctx.threadId);
-    if (senderBot) {
-      const needle = to.toLowerCase();
+    const needle = to.toLowerCase();
+    if (senderBot && senderBot.kind === "project") {
       const matchingSpecials = store
         .listSpecialThreadsForBot(senderBot.id)
         .filter((s) => s.name.toLowerCase() === needle && s.threadId !== ctx.threadId);
@@ -710,11 +718,17 @@ export function createInboxService(
               `Special thread "${matchingSpecial.name}" (${matchingSpecial.threadId}) is archived or deleted and has been demoted.`,
             );
           }
-        } catch {
-          store.removeSpecialThread(matchingSpecial.threadId);
-          publishSidebar();
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          if (/not\s*found|404/i.test(msg)) {
+            store.removeSpecialThread(matchingSpecial.threadId);
+            publishSidebar();
+            return errorResult(
+              `Special thread "${matchingSpecial.name}" (${matchingSpecial.threadId}) no longer exists and has been demoted.`,
+            );
+          }
           return errorResult(
-            `Special thread "${matchingSpecial.name}" (${matchingSpecial.threadId}) no longer exists and has been demoted.`,
+            `Could not verify Special thread "${matchingSpecial.name}" (${matchingSpecial.threadId}): ${msg}`,
           );
         }
 
@@ -754,6 +768,15 @@ export function createInboxService(
       );
       return JSON.stringify(delivered);
     } catch (error) {
+      // If no bot matched, check if the caller tried to message a Special thread from another project
+      const otherProjectSpecial = store
+        .allSpecialThreads()
+        .find((s) => s.name.toLowerCase() === needle && s.botId !== senderBot?.id);
+      if (otherProjectSpecial) {
+        return errorResult(
+          `Special thread "${otherProjectSpecial.name}" belongs to another project and cannot be messaged across projects.`,
+        );
+      }
       return errorResult(
         error instanceof Error ? error.message : String(error),
       );

@@ -43,6 +43,7 @@ import { ThreadBotInfoSection } from "./components/thread-bot-badge";
 import { useInboxStore } from "./lib/inbox-store";
 import { mostRecentRootId, sortBotRoots } from "./lib/thread-order";
 import * as ContextMenu from "@radix-ui/react-context-menu";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Button } from "./components/ui/button";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { usePortalScopeProps } from "./lib/portal-scope";
@@ -428,6 +429,7 @@ function BotGroupRow({
   onDemoteSpecial,
   onOpenBot,
   onNewChat,
+  onNewSpecialThread,
   onTogglePin,
   onDreamNow,
   onEditBot,
@@ -454,6 +456,7 @@ function BotGroupRow({
   onDemoteSpecial: (threadId: string) => void;
   onOpenBot: () => void;
   onNewChat: () => void;
+  onNewSpecialThread?: () => void;
   onTogglePin: () => void;
   onDreamNow: () => void;
   onEditBot: () => void;
@@ -656,19 +659,59 @@ function BotGroupRow({
               </span>
             </button>
 
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="size-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 shrink-0"
-              aria-label={`New conversation with ${bot.name}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onNewChat();
-              }}
-            >
-              +
-            </Button>
+            {onNewSpecialThread ? (
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="size-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 shrink-0"
+                    aria-label={`New conversation or Special thread with ${bot.name}`}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    +
+                  </Button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content
+                    {...portalScope}
+                    align="end"
+                    sideOffset={4}
+                    className="z-50 min-w-44 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+                  >
+                    <DropdownMenu.Item
+                      className="pb-menu-item flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-xs outline-none"
+                      onSelect={() => onNewChat()}
+                    >
+                      <Icon name="MessageSquare" className="size-3.5 text-muted-foreground" />
+                      <span>New conversation</span>
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Item
+                      className="pb-menu-item flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-xs outline-none"
+                      onSelect={() => onNewSpecialThread()}
+                    >
+                      <Icon name="Sparkles" className="size-3.5 text-amber-500" />
+                      <span>New Special thread…</span>
+                    </DropdownMenu.Item>
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
+            ) : (
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="size-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 shrink-0"
+                aria-label={`New conversation with ${bot.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onNewChat();
+                }}
+              >
+                +
+              </Button>
+            )}
 
             <button
               type="button"
@@ -690,6 +733,11 @@ function BotGroupRow({
             <ContextMenu.Item className="pb-menu-item flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-xs outline-none" onSelect={onNewChat}>
               New conversation
             </ContextMenu.Item>
+            {onNewSpecialThread ? (
+              <ContextMenu.Item className="pb-menu-item flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-xs outline-none" onSelect={onNewSpecialThread}>
+                New Special thread…
+              </ContextMenu.Item>
+            ) : null}
             {lastViewedThreadId && threadIds.has(lastViewedThreadId) ? (
               <ContextMenu.Item className="pb-menu-item flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-xs outline-none" onSelect={() => onSelectThread(lastViewedThreadId, false)}>
                 Open last conversation
@@ -748,8 +796,8 @@ function BotGroupRow({
                         setDropTarget(null);
                       }}
                       onMoveThread={handleMoveThread}
-                      onPromoteSpecial={onPromoteSpecial}
-                      onDemoteSpecial={onDemoteSpecial}
+                      onPromoteSpecial={bot.kind === "project" ? onPromoteSpecial : undefined}
+                      onDemoteSpecial={bot.kind === "project" ? onDemoteSpecial : undefined}
                       onToggleThreadSettle={onToggleThreadSettle}
                       onSelect={onSelectThread}
                     />
@@ -1219,6 +1267,7 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
                   }}
                   onPromoteSpecial={(thread) =>
                     setSpecialDialog({
+                      mode: "promote",
                       threadId: thread.id,
                       botId: bot.id,
                       botName: bot.name,
@@ -1293,6 +1342,7 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
                   }}
                   onPromoteSpecial={(thread) =>
                     setSpecialDialog({
+                      mode: "promote",
                       threadId: thread.id,
                       botId: bot.id,
                       botName: bot.name,
@@ -1311,6 +1361,13 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
                   }}
                   onOpenBot={() => openBot(bot)}
                   onNewChat={() => openNewChat(bot)}
+                  onNewSpecialThread={() =>
+                    setSpecialDialog({
+                      mode: "create",
+                      botId: bot.id,
+                      botName: bot.name,
+                    })
+                  }
                   onTogglePin={() => handleTogglePin(bot)}
                   onDreamNow={() => handleDreamNow(bot)}
                   onEditBot={() => setEditor({ mode: "edit", bot })}
@@ -1394,6 +1451,13 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
           <SpecialThreadDialog
             target={specialDialog}
             onClose={() => setSpecialDialog(null)}
+            onCreate={async (input) => {
+              const created = await rpc.call("special_thread_create", input);
+              toast.success(`Created Special thread: ${created.special.name}`);
+              setExpandedBots((prev) => new Set([...prev, input.botId]));
+              void refresh();
+              handleSelectThread(created.threadId, false);
+            }}
             onSave={async (input) => {
               const saved = await rpc.call("special_thread_set", input);
               toast.success(`Saved Special thread: ${saved.name}`);

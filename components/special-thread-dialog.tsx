@@ -21,22 +21,38 @@ import {
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 
-export type SpecialThreadDialogTarget = {
-  threadId: string;
-  botId: string;
-  botName: string;
-  currentTitle?: string;
-  existing?: SpecialThreadDto | null;
-};
+export type SpecialThreadDialogTarget =
+  | {
+      mode: "create";
+      botId: string;
+      botName: string;
+    }
+  | {
+      mode: "promote";
+      threadId: string;
+      botId: string;
+      botName: string;
+      currentTitle?: string;
+      existing?: SpecialThreadDto | null;
+    };
 
 export function SpecialThreadDialog({
   target,
   onClose,
+  onCreate,
   onSave,
   onRemove,
 }: {
   target: SpecialThreadDialogTarget;
   onClose: () => void;
+  onCreate: (input: {
+    botId: string;
+    name: string;
+    icon: SpecialThreadIconId;
+    color?: string;
+    instruction: string;
+    rolePrompt?: string;
+  }) => Promise<void>;
   onSave: (input: {
     threadId: string;
     botId: string;
@@ -48,8 +64,11 @@ export function SpecialThreadDialog({
   }) => Promise<void>;
   onRemove: (threadId: string) => Promise<void>;
 }) {
-  const existing = target.existing ?? null;
-  const [name, setName] = useState(existing?.name ?? target.currentTitle ?? "");
+  const isCreate = target.mode === "create";
+  const existing = target.mode === "promote" ? (target.existing ?? null) : null;
+  const [name, setName] = useState(
+    existing?.name ?? (target.mode === "promote" ? (target.currentTitle ?? "") : ""),
+  );
   const [icon, setIcon] = useState<SpecialThreadIconId>(existing?.icon ?? "merge");
   const [color, setColor] = useState<string>(existing?.color ?? SPECIAL_THREAD_COLORS[0]);
   const [instruction, setInstruction] = useState(existing?.instruction ?? "");
@@ -82,15 +101,26 @@ export function SpecialThreadDialog({
     setSaving(true);
     setError(null);
     try {
-      await onSave({
-        threadId: target.threadId,
-        botId: target.botId,
-        name: trimmedName,
-        icon,
-        color,
-        instruction: trimmedInstruction,
-        ...(rolePrompt.trim() ? { rolePrompt: rolePrompt.trim() } : {}),
-      });
+      if (isCreate) {
+        await onCreate({
+          botId: target.botId,
+          name: trimmedName,
+          icon,
+          color,
+          instruction: trimmedInstruction,
+          ...(rolePrompt.trim() ? { rolePrompt: rolePrompt.trim() } : {}),
+        });
+      } else {
+        await onSave({
+          threadId: target.threadId,
+          botId: target.botId,
+          name: trimmedName,
+          icon,
+          color,
+          instruction: trimmedInstruction,
+          ...(rolePrompt.trim() ? { rolePrompt: rolePrompt.trim() } : {}),
+        });
+      }
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -100,6 +130,7 @@ export function SpecialThreadDialog({
   };
 
   const handleDemote = async () => {
+    if (target.mode !== "promote") return;
     setSaving(true);
     setError(null);
     try {
@@ -118,7 +149,11 @@ export function SpecialThreadDialog({
           <DialogTitle className="flex items-center gap-2 text-sm">
             <SpecialThreadBadgeIcon icon={icon} color={color} size="md" />
             <span>
-              {existing ? `Edit Special thread · ${existing.name}` : `Promote to Special thread`}
+              {isCreate
+                ? `New Special thread · ${target.botName}`
+                : existing
+                  ? `Edit Special thread · ${existing.name}`
+                  : "Promote to Special thread"}
             </span>
           </DialogTitle>
           <DialogDescription className="text-xs">
@@ -262,7 +297,13 @@ export function SpecialThreadDialog({
               Cancel
             </Button>
             <Button type="button" size="sm" disabled={saving} onClick={() => void handleSave()}>
-              {saving ? "Saving…" : existing ? "Save Special thread" : "Promote"}
+              {saving
+                ? "Saving…"
+                : isCreate
+                  ? "Create Special thread"
+                  : existing
+                    ? "Save Special thread"
+                    : "Promote"}
             </Button>
           </div>
         </DialogFooter>

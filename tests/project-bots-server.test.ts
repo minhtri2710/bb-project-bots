@@ -599,4 +599,70 @@ describe("bb-project-bots server", () => {
     expect(state.specialThreads).toEqual([]);
     expect(state.threadOrder).toEqual([{ botId: "bot_ok", threadIds: ["thr_1"] }]);
   });
+
+  it("creates Special threads directly on project bots and blocks cross-project messaging & @-mentions", async () => {
+    const { alpha, beta, threads, host, sendMock } = await setup();
+    const alphaBotId = `projbot_${projectBotHash("/work/alpha")}`;
+    threads.set("thr_alpha_worker", makeThreadResponse({ id: "thr_alpha_worker", projectId: alpha.id }));
+    threads.set("thr_beta_worker", makeThreadResponse({ id: "thr_beta_worker", projectId: beta.id }));
+
+    // Create Special thread directly from project bot
+    const created = (await host.harness.behavior.callRpc("special_thread_create", {
+      botId: alphaBotId,
+      name: "Design Reviewer",
+      icon: "sparkles",
+      color: "#ec4899",
+      instruction: "Share UI screenshots with Design Reviewer before shipping.",
+      rolePrompt: "Critique UI hierarchy, contrast, and spacing.",
+    })) as { threadId: string; special: { name: string; botId: string } };
+    expect(created.special.name).toBe("Design Reviewer");
+    expect(created.special.botId).toBe(alphaBotId);
+
+    // Rejects creating Special thread on an unaffiliated bot
+    const chief = (await host.harness.behavior.callRpc("bot_create_unaffiliated", {
+      name: "Chief",
+      role: "Coordinator",
+      avatar: { color: "#6d5efc", shape: "blob", expression: "curious", motion: "calm" },
+    })) as BotRecordDto;
+    await expect(
+      host.harness.behavior.callRpc("special_thread_create", {
+        botId: chief.id,
+        name: "Critic",
+        icon: "flame",
+        instruction: "Challenge assumptions",
+      }),
+    ).rejects.toThrow(/project-specific/);
+
+    // Cross-project message by threadId is rejected
+    const crossById = await host.harness.behavior.callAgentTool(
+      "message",
+      { to: created.threadId, text: "Review beta UI" },
+      { threadId: "thr_beta_worker", projectId: beta.id },
+    );
+    expect(JSON.stringify(crossById)).toContain("project-specific");
+    expect(sendMock).not.toHaveBeenCalled();
+
+    // Cross-project message by Special thread name is rejected
+    const crossByName = await host.harness.behavior.callAgentTool(
+      "message",
+      { to: "Design Reviewer", text: "Review beta UI" },
+      { threadId: "thr_beta_worker", projectId: beta.id },
+    );
+    expect(JSON.stringify(crossByName)).toContain("another project");
+    expect(sendMock).not.toHaveBeenCalled();
+
+    // Same-project message by threadId succeeds
+    const sameProject = JSON.parse(
+      String(
+        await host.harness.behavior.callAgentTool(
+          "message",
+          { to: created.threadId, text: "Review alpha UI" },
+          { threadId: "thr_alpha_worker", projectId: alpha.id },
+        ),
+      ),
+    ) as { delivered: boolean; threadId: string };
+    expect(sameProject.delivered).toBe(true);
+    expect(sameProject.threadId).toBe(created.threadId);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
 });

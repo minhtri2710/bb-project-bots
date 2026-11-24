@@ -66,6 +66,28 @@ export const SPECIAL_THREAD_PRESETS: readonly SpecialThreadPreset[] = [
     rolePrompt:
       "You are the Reviewer for this project. Inspect diffs and branches sent by sibling threads, look for bugs, regressions, security issues, and missing tests, and reply concisely with concrete findings or approval.",
   },
+  {
+    id: "design-reviewer",
+    label: "Design Reviewer",
+    name: "Design Reviewer",
+    icon: "sparkles",
+    color: "#ec4899",
+    instruction:
+      "Before shipping user-facing UI or interaction changes, message Design Reviewer with what changed, affected components/routes, and screenshots or previews so it can critique visual hierarchy, spacing, contrast, accessibility, and UX flow.",
+    rolePrompt:
+      "You are the Design Reviewer for this project. Critique UI/UX changes sent by sibling threads for visual polish, layout balance, contrast, typography, responsiveness, keyboard/accessibility ergonomics, and interaction clarity. Reply with specific, actionable design feedback.",
+  },
+  {
+    id: "critic",
+    label: "Critic",
+    name: "Critic",
+    icon: "flame",
+    color: "#8b5cf6",
+    instruction:
+      "Before committing to a major architectural decision, refactor, or non-obvious plan, message Critic with your proposal and trade-offs so it can stress-test assumptions, surface blind spots, and challenge unnecessary complexity.",
+    rolePrompt:
+      "You are the Critic for this project. Play constructive devil's advocate on proposals and designs sent by sibling threads: question hidden assumptions, flag failure modes and over-engineering, push for simpler alternatives, and send back sharp, honest criticism.",
+  },
 ];
 
 function IconGlyph({ icon, className }: { icon: SpecialThreadIconId; className?: string }) {
