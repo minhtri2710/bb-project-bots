@@ -17,6 +17,7 @@ import {
   type ExperimentalMessageMetadataProps,
   type PluginMessageDirectiveProps,
   type PluginSidebarThread,
+  type PluginThreadActionsInlineItem,
   type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import {
@@ -28,6 +29,7 @@ import {
   type InboxMessage,
   type PluginSettingsDto,
   type ReplyInput,
+  type SpecialThreadDto,
 } from "./contract";
 import { BotEditorDialog, type BotEditorTarget } from "./components/bot-editor-dialog";
 import { DreamSettingsDialog } from "./components/dream-settings-dialog";
@@ -35,6 +37,8 @@ import { InboxPage } from "./components/inbox-page";
 import { MessageCard } from "./components/inbox-message-card";
 import { SidebarBotIcon } from "./components/sidebar-bot-icon";
 import { SidebarConversationStatus } from "./components/sidebar-conversation-status";
+import { SpecialThreadDialog, type SpecialThreadDialogTarget } from "./components/special-thread-dialog";
+import { SpecialThreadBadgeIcon } from "./components/special-thread-icon";
 import { ThreadBotInfoSection } from "./components/thread-bot-badge";
 import { useInboxStore } from "./lib/inbox-store";
 import * as ContextMenu from "@radix-ui/react-context-menu";
@@ -63,6 +67,8 @@ function useSidebarState() {
     pinnedBotIds: string[];
     settledBotIds: string[];
     settledThreads: Array<{ threadId: string; settledAt: number }>;
+    threadOrder: Array<{ botId: string; threadIds: string[] }>;
+    specialThreads: SpecialThreadDto[];
     settings: PluginSettingsDto;
     dreamConfig: DreamConfigDto;
     dreamThreadId: string | null;
@@ -79,6 +85,8 @@ function useSidebarState() {
     pinnedBotIds: [],
     settledBotIds: [],
     settledThreads: [],
+    threadOrder: [],
+    specialThreads: [],
     settings: { autoSettle: true, autoSettleAfterHours: 72 },
     dreamConfig: { enabled: false, providerId: "", model: "", intervalMinutes: 60 },
     dreamThreadId: null,
@@ -130,6 +138,18 @@ function ThreadTreeItem({
   activeAncestors,
   showHostPill = false,
   settled = false,
+  special = null,
+  canReorder = false,
+  isFirst = false,
+  isLast = false,
+  dropEdge = null,
+  onDragStartThread,
+  onDragOverThread,
+  onDropThread,
+  onDragEndThread,
+  onMoveThread,
+  onPromoteSpecial,
+  onDemoteSpecial,
   onToggleThreadSettle,
   onSelect,
   depth = 0,
@@ -140,6 +160,18 @@ function ThreadTreeItem({
   activeAncestors: Set<string>;
   showHostPill?: boolean;
   settled?: boolean;
+  special?: SpecialThreadDto | null;
+  canReorder?: boolean;
+  isFirst?: boolean;
+  isLast?: boolean;
+  dropEdge?: "before" | "after" | null;
+  onDragStartThread?: (threadId: string) => void;
+  onDragOverThread?: (threadId: string, edge: "before" | "after") => void;
+  onDropThread?: (targetThreadId: string, edge: "before" | "after") => void;
+  onDragEndThread?: () => void;
+  onMoveThread?: (threadId: string, direction: "top" | "up" | "down") => void;
+  onPromoteSpecial?: (thread: PluginSidebarThread) => void;
+  onDemoteSpecial?: (threadId: string) => void;
   onToggleThreadSettle?: (threadId: string, currentlySettled: boolean) => void;
   onSelect: (threadId: string, split: boolean) => void;
   depth?: number;
@@ -153,12 +185,124 @@ function ThreadTreeItem({
     if (activeAncestors.has(thread.id)) setExpanded(true);
   }, [activeAncestors, thread.id]);
 
+  const inlineActions = useMemo<PluginThreadActionsInlineItem[]>(() => {
+    const items: PluginThreadActionsInlineItem[] = [];
+    if (depth === 0 && onPromoteSpecial) {
+      items.push({
+        key: "special-promote",
+        group: "0_special",
+        action: {
+          label: special ? "Edit Special thread…" : "Promote to Special thread…",
+          detail: special ? special.name : "Inject a standing skill into sibling threads",
+          icon: "Sparkles",
+          run: () => onPromoteSpecial(thread),
+        },
+      });
+    }
+    if (depth === 0 && special && onDemoteSpecial) {
+      items.push({
+        key: "special-demote",
+        group: "0_special",
+        action: {
+          label: "Demote from Special thread",
+          icon: "X",
+          variant: "destructive",
+          run: () => onDemoteSpecial(thread.id),
+        },
+      });
+    }
+    if (canReorder && onMoveThread) {
+      if (!isFirst) {
+        items.push({
+          key: "reorder-top",
+          group: "1_reorder",
+          action: {
+            label: "Move to top",
+            icon: "ArrowUp",
+            run: () => onMoveThread(thread.id, "top"),
+          },
+        });
+        items.push({
+          key: "reorder-up",
+          group: "1_reorder",
+          action: {
+            label: "Move up",
+            icon: "ChevronUp",
+            run: () => onMoveThread(thread.id, "up"),
+          },
+        });
+      }
+      if (!isLast) {
+        items.push({
+          key: "reorder-down",
+          group: "1_reorder",
+          action: {
+            label: "Move down",
+            icon: "ChevronDown",
+            run: () => onMoveThread(thread.id, "down"),
+          },
+        });
+      }
+    }
+    return items;
+  }, [
+    canReorder,
+    depth,
+    isFirst,
+    isLast,
+    onDemoteSpecial,
+    onMoveThread,
+    onPromoteSpecial,
+    special,
+    thread,
+  ]);
+
   return (
-    <li>
-      <ThreadActionsContextMenu thread={threadActionTarget(thread)}>
+    <li className="relative">
+      {dropEdge === "before" ? (
+        <div className="pointer-events-none absolute inset-x-1 top-0 z-10 h-0.5 rounded-full bg-primary" />
+      ) : null}
+      <ThreadActionsContextMenu
+        thread={threadActionTarget(thread)}
+        inline={inlineActions.length > 0 ? inlineActions : undefined}
+      >
         <div
-          className={`pb-thread-row group flex items-center gap-1 rounded-md px-1.5 py-1 text-xs hover:bg-accent/50${settled ? " opacity-70 hover:opacity-100" : ""}`}
-          style={{ paddingLeft: `${depth * 14 + 8}px` }}
+          draggable={canReorder}
+          onDragStart={(e) => {
+            if (!canReorder || !onDragStartThread) return;
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", thread.id);
+            onDragStartThread(thread.id);
+          }}
+          onDragOver={(e) => {
+            if (!canReorder || !onDragOverThread) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            const rect = e.currentTarget.getBoundingClientRect();
+            const edge = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+            onDragOverThread(thread.id, edge);
+          }}
+          onDrop={(e) => {
+            if (!canReorder || !onDropThread) return;
+            e.preventDefault();
+            const rect = e.currentTarget.getBoundingClientRect();
+            const edge = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+            onDropThread(thread.id, edge);
+          }}
+          onDragEnd={() => onDragEndThread?.()}
+          className={`pb-thread-row group flex items-center gap-1 rounded-md px-1.5 py-1 text-xs hover:bg-accent/50${
+            settled ? " opacity-70 hover:opacity-100" : ""
+          }${special ? " pb-special-thread-row" : ""}`}
+          style={{
+            paddingLeft: `${depth * 14 + 8}px`,
+            ...(special
+              ? {
+                  backgroundColor: isSelected
+                    ? undefined
+                    : `${special.color ?? "#f59e0b"}10`,
+                }
+              : undefined),
+          }}
           aria-current={isSelected ? "page" : undefined}
         >
           {children.length ? (
@@ -184,9 +328,13 @@ function ThreadTreeItem({
               onSelect(thread.id, e.metaKey || e.ctrlKey);
             }}
           >
-            <span className="flex size-4 shrink-0 items-center justify-center">
-              <SidebarConversationStatus thread={thread} />
-            </span>
+            {special ? (
+              <SpecialThreadBadgeIcon icon={special.icon} color={special.color} size="sm" />
+            ) : (
+              <span className="flex size-4 shrink-0 items-center justify-center">
+                <SidebarConversationStatus thread={thread} />
+              </span>
+            )}
             {showHostPill && thread.host?.name ? (
               <span
                 className="shrink-0 rounded bg-muted px-1 py-px text-[9px] font-medium text-muted-foreground"
@@ -195,11 +343,21 @@ function ThreadTreeItem({
                 {thread.host.name}
               </span>
             ) : null}
-            <span className="min-w-0 flex-1 truncate text-[12px] text-foreground">
-              <ThreadTitle threadId={thread.id} />
+            <span
+              className={`min-w-0 flex-1 truncate text-[12px] ${
+                special ? "font-semibold text-foreground" : "text-foreground"
+              }`}
+              title={special ? `${special.name} · Special thread` : undefined}
+            >
+              {special ? special.name : <ThreadTitle threadId={thread.id} />}
             </span>
+            {special && (busy || thread.isUnread) ? (
+              <span className="flex size-3.5 shrink-0 items-center justify-center">
+                <SidebarConversationStatus thread={thread} />
+              </span>
+            ) : null}
           </a>
-          {onToggleThreadSettle && depth === 0 && !busy ? (
+          {onToggleThreadSettle && depth === 0 && !busy && !special ? (
             <button
               type="button"
               aria-label={settled ? "Wake conversation" : "Settle conversation"}
@@ -215,6 +373,9 @@ function ThreadTreeItem({
           ) : null}
         </div>
       </ThreadActionsContextMenu>
+      {dropEdge === "after" ? (
+        <div className="pointer-events-none absolute inset-x-1 bottom-0 z-10 h-0.5 rounded-full bg-primary" />
+      ) : null}
       {children.length && expanded ? (
         <ul className="space-y-0.5">
           {children.map((child) => (
@@ -257,8 +418,13 @@ function BotGroupRow({
   activeAncestors,
   lastViewedThreadId,
   settledThreadMap,
+  threadOrder,
+  specialThreadMap,
   settings,
   onToggleThreadSettle,
+  onReorderThreads,
+  onPromoteSpecial,
+  onDemoteSpecial,
   onOpenBot,
   onNewChat,
   onTogglePin,
@@ -278,8 +444,13 @@ function BotGroupRow({
   activeAncestors: Set<string>;
   lastViewedThreadId: string | null;
   settledThreadMap: Map<string, number>;
+  threadOrder: readonly string[];
+  specialThreadMap: Map<string, SpecialThreadDto>;
   settings: PluginSettingsDto;
   onToggleThreadSettle: (threadId: string, currentlySettled: boolean) => void;
+  onReorderThreads: (botId: string, threadIds: string[]) => void;
+  onPromoteSpecial: (thread: PluginSidebarThread) => void;
+  onDemoteSpecial: (threadId: string) => void;
   onOpenBot: () => void;
   onNewChat: () => void;
   onTogglePin: () => void;
@@ -290,15 +461,26 @@ function BotGroupRow({
 }) {
   const portalScope = usePortalScopeProps();
   const [showSettledThreads, setShowSettledThreads] = useState(false);
+  const [dragThreadId, setDragThreadId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ threadId: string; edge: "before" | "after" } | null>(null);
   const visibleThreads = useMemo(
     () => threads.filter((t) => !t.isArchived).sort((a, b) => b.updatedAt - a.updatedAt),
     [threads],
   );
   const threadIds = useMemo(() => new Set(visibleThreads.map((t) => t.id)), [visibleThreads]);
-  const roots = useMemo(
-    () => visibleThreads.filter((t) => !t.parentThreadId || !threadIds.has(t.parentThreadId)),
-    [visibleThreads, threadIds],
-  );
+  const roots = useMemo(() => {
+    const rawRoots = visibleThreads.filter((t) => !t.parentThreadId || !threadIds.has(t.parentThreadId));
+    if (threadOrder.length === 0) return rawRoots;
+    const rank = new Map(threadOrder.map((id, idx) => [id, idx]));
+    return [...rawRoots].sort((a, b) => {
+      const ra = rank.get(a.id);
+      const rb = rank.get(b.id);
+      if (ra !== undefined && rb !== undefined) return ra - rb;
+      if (ra !== undefined) return -1;
+      if (rb !== undefined) return 1;
+      return b.updatedAt - a.updatedAt;
+    });
+  }, [visibleThreads, threadIds, threadOrder]);
   const childrenByParent = useMemo(() => {
     const map = new Map<string, PluginSidebarThread[]>();
     for (const t of visibleThreads) {
@@ -337,7 +519,8 @@ function BotGroupRow({
           t.id === activeThreadId ||
           isThreadBusy(t) ||
           t.isPinned ||
-          t.isUnread,
+          t.isUnread ||
+          specialThreadMap.has(t.id),
       );
       if (keepActive) {
         active.push(root);
@@ -356,7 +539,41 @@ function BotGroupRow({
       }
     }
     return { activeRoots: active, settledRoots: settledList };
-  }, [roots, childrenByParent, activeThreadId, settledThreadMap, settings]);
+  }, [roots, childrenByParent, activeThreadId, settledThreadMap, specialThreadMap, settings]);
+
+  const handleMoveThread = useCallback(
+    (threadId: string, direction: "top" | "up" | "down") => {
+      const currentIds = activeRoots.map((t) => t.id);
+      const idx = currentIds.indexOf(threadId);
+      if (idx === -1) return;
+      const nextIds = [...currentIds];
+      const [item] = nextIds.splice(idx, 1);
+      if (!item) return;
+      if (direction === "top") nextIds.unshift(item);
+      else if (direction === "up") nextIds.splice(Math.max(0, idx - 1), 0, item);
+      else nextIds.splice(Math.min(nextIds.length, idx + 1), 0, item);
+      onReorderThreads(bot.id, [...nextIds, ...settledRoots.map((t) => t.id)]);
+    },
+    [activeRoots, settledRoots, bot.id, onReorderThreads],
+  );
+
+  const handleDropThread = useCallback(
+    (targetThreadId: string, edge: "before" | "after") => {
+      const sourceId = dragThreadId;
+      setDragThreadId(null);
+      setDropTarget(null);
+      if (!sourceId || sourceId === targetThreadId) return;
+      const currentIds = activeRoots.map((t) => t.id);
+      const fromIdx = currentIds.indexOf(sourceId);
+      const targetIdx = currentIds.indexOf(targetThreadId);
+      if (fromIdx === -1 || targetIdx === -1) return;
+      const nextIds = currentIds.filter((id) => id !== sourceId);
+      const insertAt = nextIds.indexOf(targetThreadId) + (edge === "after" ? 1 : 0);
+      nextIds.splice(insertAt, 0, sourceId);
+      onReorderThreads(bot.id, [...nextIds, ...settledRoots.map((t) => t.id)]);
+    },
+    [activeRoots, settledRoots, bot.id, dragThreadId, onReorderThreads],
+  );
 
   const busy = visibleThreads.some(isThreadBusy);
   const waiting = visibleThreads.some((t) => !t.isArchived && t.hasPendingInteraction);
@@ -492,7 +709,7 @@ function BotGroupRow({
             <>
               {activeRoots.length > 0 ? (
                 <ul className="space-y-0.5">
-                  {activeRoots.map((thread) => (
+                  {activeRoots.map((thread, idx) => (
                     <ThreadTreeItem
                       key={thread.id}
                       thread={thread}
@@ -501,6 +718,25 @@ function BotGroupRow({
                       activeAncestors={activeAncestors}
                       showHostPill={spansMultipleHosts}
                       settled={false}
+                      special={specialThreadMap.get(thread.id) ?? null}
+                      canReorder={activeRoots.length > 1}
+                      isFirst={idx === 0}
+                      isLast={idx === activeRoots.length - 1}
+                      dropEdge={dropTarget?.threadId === thread.id ? dropTarget.edge : null}
+                      onDragStartThread={setDragThreadId}
+                      onDragOverThread={(id, edge) => {
+                        if (dragThreadId && dragThreadId !== id) {
+                          setDropTarget({ threadId: id, edge });
+                        }
+                      }}
+                      onDropThread={handleDropThread}
+                      onDragEndThread={() => {
+                        setDragThreadId(null);
+                        setDropTarget(null);
+                      }}
+                      onMoveThread={handleMoveThread}
+                      onPromoteSpecial={onPromoteSpecial}
+                      onDemoteSpecial={onDemoteSpecial}
                       onToggleThreadSettle={onToggleThreadSettle}
                       onSelect={onSelectThread}
                     />
@@ -565,6 +801,8 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
     lastUsedAt,
     pinnedBotIds,
     settledThreads,
+    threadOrder,
+    specialThreads,
     settings,
     dreamConfig,
     dreamThreadId,
@@ -577,6 +815,7 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
   const [chatsExpanded, setChatsExpanded] = useState(false);
   const [filterQuery, setFilterQuery] = useState("");
   const [editor, setEditor] = useState<BotEditorTarget | null>(null);
+  const [specialDialog, setSpecialDialog] = useState<SpecialThreadDialogTarget | null>(null);
   const [dreamSettingsOpen, setDreamSettingsOpen] = useState(false);
 
   // Refresh when BB's project catalog changes
@@ -622,6 +861,8 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
 
   const pinnedSet = useMemo(() => new Set(pinnedBotIds), [pinnedBotIds]);
   const settledThreadMap = useMemo(() => new Map(settledThreads.map((t) => [t.threadId, t.settledAt])), [settledThreads]);
+  const threadOrderMap = useMemo(() => new Map(threadOrder.map((entry) => [entry.botId, entry.threadIds])), [threadOrder]);
+  const specialThreadMap = useMemo(() => new Map(specialThreads.map((s) => [s.threadId, s])), [specialThreads]);
   const hostNameById = useMemo(() => new Map(hosts.map((h) => [h.id, h.name])), [hosts]);
 
   const projectBotByProjectId = useMemo(() => {
@@ -953,8 +1194,34 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
                   activeAncestors={activeAncestors}
                   lastViewedThreadId={lastViewedMap.get(bot.id) ?? null}
                   settledThreadMap={settledThreadMap}
+                  threadOrder={threadOrderMap.get(bot.id) ?? []}
+                  specialThreadMap={specialThreadMap}
                   settings={settings}
                   onToggleThreadSettle={handleToggleThreadSettle}
+                  onReorderThreads={(botId, ids) => {
+                    void rpc
+                      .call("thread_reorder", { botId, threadIds: ids })
+                      .then(() => refresh())
+                      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
+                  }}
+                  onPromoteSpecial={(thread) =>
+                    setSpecialDialog({
+                      threadId: thread.id,
+                      botId: bot.id,
+                      botName: bot.name,
+                      currentTitle: thread.title ?? undefined,
+                      existing: specialThreadMap.get(thread.id) ?? null,
+                    })
+                  }
+                  onDemoteSpecial={(threadId) => {
+                    void rpc
+                      .call("special_thread_remove", { threadId })
+                      .then(() => {
+                        toast.success("Demoted from Special thread");
+                        void refresh();
+                      })
+                      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
+                  }}
                   onOpenBot={() => openBot(bot)}
                   onNewChat={() => openNewChat(bot)}
                   onTogglePin={() => handleTogglePin(bot)}
@@ -1001,8 +1268,34 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
                   activeAncestors={activeAncestors}
                   lastViewedThreadId={lastViewedMap.get(bot.id) ?? null}
                   settledThreadMap={settledThreadMap}
+                  threadOrder={threadOrderMap.get(bot.id) ?? []}
+                  specialThreadMap={specialThreadMap}
                   settings={settings}
                   onToggleThreadSettle={handleToggleThreadSettle}
+                  onReorderThreads={(botId, ids) => {
+                    void rpc
+                      .call("thread_reorder", { botId, threadIds: ids })
+                      .then(() => refresh())
+                      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
+                  }}
+                  onPromoteSpecial={(thread) =>
+                    setSpecialDialog({
+                      threadId: thread.id,
+                      botId: bot.id,
+                      botName: bot.name,
+                      currentTitle: thread.title ?? undefined,
+                      existing: specialThreadMap.get(thread.id) ?? null,
+                    })
+                  }
+                  onDemoteSpecial={(threadId) => {
+                    void rpc
+                      .call("special_thread_remove", { threadId })
+                      .then(() => {
+                        toast.success("Demoted from Special thread");
+                        void refresh();
+                      })
+                      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
+                  }}
                   onOpenBot={() => openBot(bot)}
                   onNewChat={() => openNewChat(bot)}
                   onTogglePin={() => handleTogglePin(bot)}
@@ -1079,6 +1372,23 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
             onDeleteUnaffiliated={async (botId) => {
               await rpc.call("bot_delete_unaffiliated", { botId });
               toast.success("Deleted bot");
+              void refresh();
+            }}
+          />
+        ) : null}
+
+        {specialDialog ? (
+          <SpecialThreadDialog
+            target={specialDialog}
+            onClose={() => setSpecialDialog(null)}
+            onSave={async (input) => {
+              const saved = await rpc.call("special_thread_set", input);
+              toast.success(`Saved Special thread: ${saved.name}`);
+              void refresh();
+            }}
+            onRemove={async (threadId) => {
+              await rpc.call("special_thread_remove", { threadId });
+              toast.success("Demoted from Special thread");
               void refresh();
             }}
           />

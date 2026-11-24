@@ -656,7 +656,37 @@ export function createInboxService(
       });
     }
 
-    // 4. Direct in-process bot target (botId, projectId, or exact bot name)
+    // 4. Special thread name match on the sender's own bot (e.g. to: "Lander")
+    const senderBot = await resolveBotSummary(ctx.threadId);
+    if (senderBot) {
+      const needle = to.toLowerCase();
+      const matchingSpecial = store
+        .listSpecialThreadsForBot(senderBot.id)
+        .find((s) => s.name.toLowerCase() === needle && s.threadId !== ctx.threadId);
+      if (matchingSpecial) {
+        const framed = formatDirectThreadMessage(ctx.threadId, senderBot, text);
+        try {
+          await bb.sdk.threads.send({
+            threadId: matchingSpecial.threadId,
+            mode: "queue-if-active",
+            senderThreadId: ctx.threadId,
+            input: [{ type: "text", text: framed, mentions: [] }],
+          });
+        } catch (error) {
+          return errorResult(
+            `Failed to send to Special thread "${matchingSpecial.name}" (${matchingSpecial.threadId}): ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        return JSON.stringify({
+          to: matchingSpecial.name,
+          specialThread: matchingSpecial.name,
+          threadId: matchingSpecial.threadId,
+          delivered: true,
+        });
+      }
+    }
+
+    // 5. Direct in-process bot target (botId, projectId, or exact bot name)
     try {
       const delivered = await sendBotMessage(
         bb,

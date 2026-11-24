@@ -12,6 +12,7 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { BotAvatar } from "./appearance";
+import type { SpecialThreadDto, SpecialThreadIconId } from "../contract";
 import {
   applyMemoryOperation,
   DEFAULT_MEMORY_TEMPLATE,
@@ -71,6 +72,8 @@ export type BotDreamState = {
   processedThreadSeq: Record<string, number>;
 };
 
+export type SpecialThreadRecord = SpecialThreadDto;
+
 type RuntimeState = {
   threadBindings: Record<string, string>;
   lastViewed: Record<string, string>;
@@ -78,6 +81,8 @@ type RuntimeState = {
   pinnedBotIds: string[];
   settledBotIds: string[];
   settledThreads: Record<string, number>;
+  threadOrder: Record<string, string[]>;
+  specialThreads: Record<string, SpecialThreadRecord>;
   dreamConfig: DreamConfig;
   dreamThreadId: string | null;
   dreamState: Record<string, BotDreamState>;
@@ -169,6 +174,8 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
         pinnedBotIds: [],
         settledBotIds: [],
         settledThreads: {},
+        threadOrder: {},
+        specialThreads: {},
         dreamConfig: { ...DEFAULT_DREAM_CONFIG },
         dreamThreadId: null,
         dreamState: {},
@@ -184,6 +191,8 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
         pinnedBotIds: Array.isArray(parsed.pinnedBotIds) ? parsed.pinnedBotIds.filter((x): x is string => typeof x === "string") : [],
         settledBotIds: Array.isArray(parsed.settledBotIds) ? parsed.settledBotIds.filter((x): x is string => typeof x === "string") : [],
         settledThreads: parsed.settledThreads && typeof parsed.settledThreads === "object" ? parsed.settledThreads : {},
+        threadOrder: parsed.threadOrder && typeof parsed.threadOrder === "object" ? parsed.threadOrder : {},
+        specialThreads: parsed.specialThreads && typeof parsed.specialThreads === "object" ? parsed.specialThreads : {},
         dreamConfig: {
           enabled: Boolean(dc?.enabled),
           providerId: typeof dc?.providerId === "string" ? dc.providerId : "",
@@ -201,6 +210,8 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
         pinnedBotIds: [],
         settledBotIds: [],
         settledThreads: {},
+        threadOrder: {},
+        specialThreads: {},
         dreamConfig: { ...DEFAULT_DREAM_CONFIG },
         dreamThreadId: null,
         dreamState: {},
@@ -682,6 +693,85 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
     return value;
   }
 
+  function setThreadOrder(botId: string, threadIds: string[]): string[] {
+    const deduped = [...new Set(threadIds.filter((t) => typeof t === "string" && t.trim().length > 0))];
+    const state = loadState();
+    state.threadOrder[botId] = deduped;
+    saveState(state);
+    return deduped;
+  }
+
+  function threadOrderForBot(botId: string): string[] {
+    return loadState().threadOrder[botId] ?? [];
+  }
+
+  function allThreadOrders(): Array<{ botId: string; threadIds: string[] }> {
+    return Object.entries(loadState().threadOrder).map(([botId, threadIds]) => ({
+      botId,
+      threadIds: Array.isArray(threadIds) ? threadIds : [],
+    }));
+  }
+
+  function setSpecialThread(input: {
+    threadId: string;
+    botId: string;
+    name: string;
+    icon: SpecialThreadIconId;
+    color?: string;
+    instruction: string;
+    rolePrompt?: string;
+  }): { record: SpecialThreadRecord; created: boolean } {
+    const state = loadState();
+    const existing = state.specialThreads[input.threadId];
+    const now = Date.now();
+    const record: SpecialThreadRecord = {
+      threadId: input.threadId,
+      botId: input.botId,
+      name: input.name.trim(),
+      icon: input.icon,
+      ...(input.color ? { color: input.color } : {}),
+      instruction: input.instruction.trim(),
+      ...(input.rolePrompt?.trim() ? { rolePrompt: input.rolePrompt.trim() } : {}),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    state.specialThreads[input.threadId] = record;
+    delete state.settledThreads[input.threadId];
+    if (!existing) {
+      const currentOrder = state.threadOrder[input.botId] ?? [];
+      state.threadOrder[input.botId] = [
+        input.threadId,
+        ...currentOrder.filter((id) => id !== input.threadId),
+      ];
+    }
+    saveState(state);
+    return { record, created: !existing };
+  }
+
+  function removeSpecialThread(threadId: string): boolean {
+    const state = loadState();
+    if (!(threadId in state.specialThreads)) return false;
+    delete state.specialThreads[threadId];
+    saveState(state);
+    return true;
+  }
+
+  function getSpecialThread(threadId: string): SpecialThreadRecord | null {
+    return loadState().specialThreads[threadId] ?? null;
+  }
+
+  function listSpecialThreadsForBot(botId: string): SpecialThreadRecord[] {
+    return Object.values(loadState().specialThreads)
+      .filter((s) => s.botId === botId)
+      .sort((a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name));
+  }
+
+  function allSpecialThreads(): SpecialThreadRecord[] {
+    return Object.values(loadState().specialThreads).sort(
+      (a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name),
+    );
+  }
+
   function stageComposeTarget(botId: string | null, projectId: string | null): void {
     if (!botId || !projectId) {
       stagedCompose = null;
@@ -727,6 +817,14 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
     settledBotIds,
     setThreadSettled,
     allSettledThreads,
+    setThreadOrder,
+    threadOrderForBot,
+    allThreadOrders,
+    setSpecialThread,
+    removeSpecialThread,
+    getSpecialThread,
+    listSpecialThreadsForBot,
+    allSpecialThreads,
     getDreamConfig,
     setDreamConfig,
     getDreamThreadId,

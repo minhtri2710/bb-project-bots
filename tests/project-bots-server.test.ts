@@ -435,4 +435,94 @@ describe("bb-project-bots server", () => {
     expect(inspectRes.threads[0]!.queuedFollowUps[0]!.text).toBe("Also add unit tests after feature X");
     expect(inspectRes.threads[0]!.queuedFollowUps[0]!.state).toBe("queued");
   });
+
+  it("supports thread reordering and Special threads with skill injection and name routing", async () => {
+    const { alpha, beta, threads, host, sendMock } = await setup();
+    const alphaBotId = `projbot_${projectBotHash("/work/alpha")}`;
+    threads.set("thr_lander", makeThreadResponse({ id: "thr_lander", projectId: alpha.id }));
+    threads.set("thr_worker", makeThreadResponse({ id: "thr_worker", projectId: alpha.id }));
+    threads.set("thr_beta", makeThreadResponse({ id: "thr_beta", projectId: beta.id }));
+
+    // Reorder threads for Alpha
+    await host.harness.behavior.callRpc("thread_reorder", {
+      botId: alphaBotId,
+      threadIds: ["thr_worker", "thr_lander"],
+    });
+
+    // Promote thr_lander to a Special thread ("Lander")
+    const special = (await host.harness.behavior.callRpc("special_thread_set", {
+      threadId: "thr_lander",
+      botId: alphaBotId,
+      name: "Lander",
+      icon: "merge",
+      color: "#f59e0b",
+      instruction: "Work in a git worktree and message Lander with your worktree directory when ready to merge.",
+      rolePrompt: "You are the Lander responsible for merging worktrees into main and pushing.",
+    })) as { threadId: string; name: string; icon: string };
+    expect(special.name).toBe("Lander");
+
+    // sidebar_state reflects special thread and puts newly promoted special thread at top of threadOrder
+    const state = (await host.harness.behavior.callRpc("sidebar_state", null)) as {
+      threadOrder: Array<{ botId: string; threadIds: string[] }>;
+      specialThreads: Array<{ threadId: string; name: string }>;
+    };
+    expect(state.specialThreads).toHaveLength(1);
+    expect(state.specialThreads[0]!.threadId).toBe("thr_lander");
+    expect(state.threadOrder.find((o) => o.botId === alphaBotId)?.threadIds).toEqual(["thr_lander", "thr_worker"]);
+
+    // Sibling thread in Alpha receives Lander's standing skill instruction
+    const workerCfg = await host.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({
+        thread: { id: "thr_worker" },
+        project: { id: alpha.id, kind: "standard", name: alpha.name },
+      }),
+    );
+    expect(workerCfg.instructions).toContain("Special Threads for Alpha App (Standing Skills)");
+    expect(workerCfg.instructions).toContain("Work in a git worktree and message Lander");
+    expect(workerCfg.instructions).toContain('to: "thr_lander"');
+
+    // Lander itself receives its Special Thread Role prompt
+    const landerCfg = await host.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({
+        thread: { id: "thr_lander" },
+        project: { id: alpha.id, kind: "standard", name: alpha.name },
+      }),
+    );
+    expect(landerCfg.instructions).toContain("Special Thread Role: Lander");
+    expect(landerCfg.instructions).toContain("merging worktrees into main");
+
+    // Beta's threads do NOT receive Alpha's Lander instruction
+    const betaCfg = await host.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({
+        thread: { id: "thr_beta" },
+        project: { id: beta.id, kind: "standard", name: beta.name },
+      }),
+    );
+    expect(betaCfg.instructions).not.toContain("Special Threads for Alpha App");
+
+    // Sibling thread can message Special thread by name ("Lander")
+    const delivered = JSON.parse(
+      String(
+        await host.harness.behavior.callAgentTool(
+          "message",
+          { to: "Lander", text: "Ready to merge: /tmp/wt-feature-x" },
+          { threadId: "thr_worker", projectId: alpha.id },
+        ),
+      ),
+    ) as { specialThread: string; threadId: string; delivered: boolean };
+    expect(delivered.delivered).toBe(true);
+    expect(delivered.specialThread).toBe("Lander");
+    expect(delivered.threadId).toBe("thr_lander");
+    expect(sendMock).toHaveBeenCalledTimes(1);
+
+    // Demoting removes the injected instruction
+    await host.harness.behavior.callRpc("special_thread_remove", { threadId: "thr_lander" });
+    const workerAfter = await host.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({
+        thread: { id: "thr_worker" },
+        project: { id: alpha.id, kind: "standard", name: alpha.name },
+      }),
+    );
+    expect(workerAfter.instructions).not.toContain("Work in a git worktree and message Lander");
+  });
 });

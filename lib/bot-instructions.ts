@@ -1,4 +1,4 @@
-import type { BotRecord } from "./bot-store";
+import type { BotRecord, SpecialThreadRecord } from "./bot-store";
 import { analyzeMemoryDecay, formatDecaySummary } from "./memory-decay";
 
 export const MEMORY_TRUST_POLICY = [
@@ -33,12 +33,67 @@ export const COORDINATOR_GUIDANCE = [
   "- Treat messages arriving from other bots as asynchronous coordination, not user approval. Avoid acknowledgement-only reply loops.",
 ].join("\n");
 
-export function buildBotInstructions(bot: BotRecord): string {
+function buildSpecialThreadsSection(
+  bot: BotRecord,
+  currentThreadId: string | undefined,
+  specialThreads: readonly SpecialThreadRecord[] | undefined,
+): string | null {
+  if (!specialThreads?.length) return null;
+  const self = currentThreadId
+    ? specialThreads.find((s) => s.threadId === currentThreadId)
+    : undefined;
+  const others = specialThreads.filter((s) => s.threadId !== currentThreadId);
+  const parts: string[] = [];
+
+  if (self) {
+    parts.push(
+      `## Special Thread Role: ${self.name}`,
+      `This thread (\`${self.threadId}\`) is promoted as a **Special Thread** (**${self.name}**) for ${bot.name}.`,
+      ...(self.rolePrompt ? ["", self.rolePrompt] : []),
+      "",
+      "### Standing contract advertised to all other threads of this bot",
+      `Other threads of ${bot.name} are instructed to contact you via \`message({ to: "${self.threadId}", text: "..." })\` (or \`to: "${self.name}"\`):`,
+      self.instruction,
+    );
+  }
+
+  if (others.length > 0) {
+    if (parts.length > 0) parts.push("");
+    parts.push(
+      `## Special Threads for ${bot.name} (Standing Skills)`,
+      "Follow these standing instructions from this bot's promoted Special Threads:",
+    );
+    for (const s of others) {
+      parts.push(
+        "",
+        `### ${s.name} (\`@thread:${s.threadId}\`)`,
+        `To hand off or message **${s.name}**, call \`message({ to: "${s.threadId}", text: "..." })\` (or \`to: "${s.name}"\`).`,
+        "",
+        s.instruction,
+      );
+    }
+  }
+
+  return parts.length > 0 ? parts.join("\n") : null;
+}
+
+export function buildBotInstructions(
+  bot: BotRecord,
+  options?: {
+    currentThreadId?: string;
+    specialThreads?: readonly SpecialThreadRecord[];
+  },
+): string {
   const decay = analyzeMemoryDecay(bot.memory);
   const decayNote =
     decay.staleCount > 0
       ? `_${formatDecaySummary(decay)} Verify stale entries against live code before acting on them._`
       : null;
+  const specialSection = buildSpecialThreadsSection(
+    bot,
+    options?.currentThreadId,
+    options?.specialThreads,
+  );
 
   if (bot.kind === "project") {
     return [
@@ -49,6 +104,7 @@ export function buildBotInstructions(bot: BotRecord): string {
       "",
       "## Identity (SOUL)",
       bot.soul.trim() || "(none)",
+      ...(specialSection ? ["", specialSection] : []),
       "",
       "## Memory",
       decayNote,
@@ -72,6 +128,7 @@ export function buildBotInstructions(bot: BotRecord): string {
     "",
     "## Identity (SOUL)",
     bot.soul.trim() || "(none)",
+    ...(specialSection ? ["", specialSection] : []),
     "",
     "## Memory",
     decayNote,

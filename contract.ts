@@ -98,6 +98,31 @@ export const pluginSettingsSchema = z.object({
 }).strict();
 export type PluginSettingsDto = z.infer<typeof pluginSettingsSchema>;
 
+export const SPECIAL_THREAD_ICON_IDS = [
+  "rocket",
+  "merge",
+  "shield",
+  "sparkles",
+  "flame",
+  "compass",
+  "wrench",
+  "crown",
+] as const;
+export type SpecialThreadIconId = (typeof SPECIAL_THREAD_ICON_IDS)[number];
+
+export const specialThreadSchema = z.object({
+  threadId: id,
+  botId: id,
+  name: z.string().trim().min(1).max(80),
+  icon: z.enum(SPECIAL_THREAD_ICON_IDS),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  instruction: z.string().trim().min(1).max(4000),
+  rolePrompt: z.string().trim().max(4000).optional(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+}).strict();
+export type SpecialThreadDto = z.infer<typeof specialThreadSchema>;
+
 // --- Decision Inbox & unified message({ text, to?, query? }) schemas ---
 
 export const optionSchema = z.object({
@@ -238,6 +263,8 @@ export const rpcContract = defineRpcContract({
       pinnedBotIds: z.array(id),
       settledBotIds: z.array(id),
       settledThreads: z.array(z.object({ threadId: id, settledAt: z.number() }).strict()),
+      threadOrder: z.array(z.object({ botId: id, threadIds: z.array(id) }).strict()),
+      specialThreads: z.array(specialThreadSchema),
       settings: pluginSettingsSchema,
       dreamConfig: dreamConfigSchema,
       dreamThreadId: id.nullable(),
@@ -256,6 +283,26 @@ export const rpcContract = defineRpcContract({
   thread_settle_set: {
     input: z.object({ threadId: id, settled: z.boolean() }).strict(),
     output: z.object({ settledThreads: z.array(z.object({ threadId: id, settledAt: z.number() }).strict()) }).strict(),
+  },
+  thread_reorder: {
+    input: z.object({ botId: id, threadIds: z.array(id) }).strict(),
+    output: z.object({ botId: id, threadIds: z.array(id) }).strict(),
+  },
+  special_thread_set: {
+    input: z.object({
+      threadId: id,
+      botId: id,
+      name: z.string().trim().min(1).max(80),
+      icon: z.enum(SPECIAL_THREAD_ICON_IDS),
+      color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+      instruction: z.string().trim().min(1).max(4000),
+      rolePrompt: z.string().trim().max(4000).optional(),
+    }).strict(),
+    output: specialThreadSchema,
+  },
+  special_thread_remove: {
+    input: z.object({ threadId: id }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
   },
   dream_providers: {
     input: z.null(),

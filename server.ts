@@ -109,11 +109,14 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
       return null;
     }
 
-    function configForBot(bot: BotRecord) {
+    function configForBot(bot: BotRecord, currentThreadId?: string) {
       return {
         tools: ["update_memory_state", "list_bots", "inspect_bot", "message"],
         skills: ["project-bots", "inbox"],
-        instructions: buildBotInstructions(bot),
+        instructions: buildBotInstructions(bot, {
+          currentThreadId,
+          specialThreads: store.listSpecialThreadsForBot(bot.id),
+        }),
       };
     }
 
@@ -148,12 +151,12 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
       const unaffiliatedId = unaffiliatedOwnerSync(ctx.thread);
       if (unaffiliatedId) {
         const bot = store.readUnaffiliatedBot(unaffiliatedId);
-        if (bot) return configForBot(bot);
+        if (bot) return configForBot(bot, ctx.thread.id);
       }
       if (ctx.project.kind === "standard") {
         const { bot, created } = store.ensureProjectBot(toProjectSummary(ctx.project));
         if (created) publish();
-        return configForBot(bot);
+        return configForBot(bot, ctx.thread.id);
       }
       return { tools: ["message"], skills: ["inbox"] };
     });
@@ -501,6 +504,8 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
           pinnedBotIds: store.pinnedBotIds(),
           settledBotIds: store.settledBotIds(),
           settledThreads: store.allSettledThreads(),
+          threadOrder: store.allThreadOrders(),
+          specialThreads: store.allSpecialThreads(),
           settings,
           dreamConfig: store.getDreamConfig(),
           dreamThreadId: store.getDreamThreadId(),
@@ -526,6 +531,29 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
         const settledThreads = store.setThreadSettled(threadId, settled);
         publish();
         return { settledThreads };
+      },
+
+      thread_reorder: async ({ botId, threadIds }) => {
+        const saved = store.setThreadOrder(botId, threadIds);
+        publish();
+        return { botId, threadIds: saved };
+      },
+
+      special_thread_set: async (input) => {
+        const { record } = store.setSpecialThread(input);
+        try {
+          await bb.sdk.threads.update({ threadId: input.threadId, title: record.name });
+        } catch {
+          // Best-effort title sync
+        }
+        publish();
+        return record;
+      },
+
+      special_thread_remove: async ({ threadId }) => {
+        store.removeSpecialThread(threadId);
+        publish();
+        return { ok: true as const };
       },
 
       dream_providers: async () => {
@@ -696,7 +724,7 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
       thread_bot_info: async ({ threadId }) => {
         const resolved = await resolveThreadBot(bb, store, threadId, false);
         if (!resolved) return { bot: null, tools: [], instructions: "" };
-        const cfg = configForBot(resolved.bot);
+        const cfg = configForBot(resolved.bot, threadId);
         return {
           bot: resolved.bot,
           tools: cfg.tools,
