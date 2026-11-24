@@ -1,0 +1,1076 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import {
+  definePluginApp,
+  experimental_ThreadActionsContextMenu as ThreadActionsContextMenu,
+  experimental_useSidebarNavigation,
+  experimental_useSidebarThreads,
+  ThreadTitle,
+  useBbNavigate,
+  useRealtime,
+  useRealtimeConnectionState,
+  useRpc,
+  type PluginSidebarThread,
+  type PluginThreadListProps,
+} from "@get-bb/plugin-sdk/app";
+import type { BotRecordDto, DreamConfigDto, DreamStateSummaryDto, PluginSettingsDto, rpcContract } from "./contract";
+import { BotEditorDialog, type BotEditorTarget } from "./components/bot-editor-dialog";
+import { DreamSettingsDialog } from "./components/dream-settings-dialog";
+import { SidebarBotIcon } from "./components/sidebar-bot-icon";
+import { SidebarConversationStatus } from "./components/sidebar-conversation-status";
+import { ThreadBotHeaderBadge, ThreadBotInfoSection } from "./components/thread-bot-badge";
+import * as ContextMenu from "@radix-ui/react-context-menu";
+import { Button } from "./components/ui/button";
+import { TooltipProvider } from "./components/ui/tooltip";
+import { usePortalScopeProps } from "./lib/portal-scope";
+import { threadActionTarget } from "./lib/thread-action-target";
+import "./style.css";
+
+const CHANGED = "project-bots-changed";
+
+function isThreadBusy(thread: PluginSidebarThread): boolean {
+  return !thread.isArchived && (thread.status === "active" || thread.status === "starting" || thread.hasPendingInteraction);
+}
+
+function useSidebarState() {
+  const rpc = useRpc<typeof rpcContract>();
+  const [state, setState] = useState<{
+    projectBots: BotRecordDto[];
+    unaffiliatedBots: BotRecordDto[];
+    hosts: Array<{ id: string; name: string; connected: boolean }>;
+    personalProjectId: string;
+    threadBindings: Array<{ threadId: string; botId: string }>;
+    lastViewed: Array<{ botId: string; threadId: string }>;
+    lastUsedAt: Array<{ botId: string; lastUsedAt: number }>;
+    pinnedBotIds: string[];
+    settledBotIds: string[];
+    settledThreads: Array<{ threadId: string; settledAt: number }>;
+    settings: PluginSettingsDto;
+    dreamConfig: DreamConfigDto;
+    dreamThreadId: string | null;
+    dreamStates: DreamStateSummaryDto[];
+    rootDir: string;
+  }>({
+    projectBots: [],
+    unaffiliatedBots: [],
+    hosts: [],
+    personalProjectId: "",
+    threadBindings: [],
+    lastViewed: [],
+    lastUsedAt: [],
+    pinnedBotIds: [],
+    settledBotIds: [],
+    settledThreads: [],
+    settings: { autoSettle: true, autoSettleAfterHours: 72 },
+    dreamConfig: { enabled: false, providerId: "", model: "", intervalMinutes: 60 },
+    dreamThreadId: null,
+    dreamStates: [],
+    rootDir: "",
+  });
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const seq = useRef(0);
+
+  const refresh = useCallback(() => {
+    const current = ++seq.current;
+    return rpc
+      .call("sidebar_state", null)
+      .then((result) => {
+        if (current !== seq.current) return;
+        setState(result);
+        setLoaded(true);
+        setError(null);
+      })
+      .catch((cause) => {
+        if (current !== seq.current) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
+      });
+  }, [rpc]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const connection = useRealtimeConnectionState();
+  const prev = useRef(connection);
+  useEffect(() => {
+    if (connection === "connected" && prev.current !== "connected") void refresh();
+    prev.current = connection;
+  }, [connection, refresh]);
+
+  useRealtime(CHANGED, () => {
+    void refresh();
+  });
+
+  return { rpc, ...state, loaded, error, refresh };
+}
+
+function ThreadTreeItem({
+  thread,
+  childrenByParent,
+  activeThreadId,
+  activeAncestors,
+  showHostPill = false,
+  settled = false,
+  onToggleThreadSettle,
+  onSelect,
+  depth = 0,
+}: {
+  thread: PluginSidebarThread;
+  childrenByParent: Map<string, PluginSidebarThread[]>;
+  activeThreadId: string | null;
+  activeAncestors: Set<string>;
+  showHostPill?: boolean;
+  settled?: boolean;
+  onToggleThreadSettle?: (threadId: string, currentlySettled: boolean) => void;
+  onSelect: (threadId: string, split: boolean) => void;
+  depth?: number;
+}) {
+  const children = childrenByParent.get(thread.id) ?? [];
+  const [expanded, setExpanded] = useState(() => activeAncestors.has(thread.id));
+  const isSelected = thread.id === activeThreadId;
+  const busy = isThreadBusy(thread);
+
+  useEffect(() => {
+    if (activeAncestors.has(thread.id)) setExpanded(true);
+  }, [activeAncestors, thread.id]);
+
+  return (
+    <li>
+      <ThreadActionsContextMenu thread={threadActionTarget(thread)}>
+        <div
+          className={`pb-thread-row group flex items-center gap-1 rounded-md px-1.5 py-1 text-xs hover:bg-accent/50${settled ? " opacity-70 hover:opacity-100" : ""}`}
+          style={{ paddingLeft: `${depth * 14 + 8}px` }}
+          aria-current={isSelected ? "page" : undefined}
+        >
+          {children.length ? (
+            <button
+              type="button"
+              aria-label={expanded ? "Collapse child conversations" : "Expand child conversations"}
+              className="flex size-4 shrink-0 items-center justify-center rounded text-[10px] text-muted-foreground hover:bg-accent"
+              onClick={(e) => {
+                e.stopPropagation();
+                setExpanded((v) => !v);
+              }}
+            >
+              {expanded ? "▾" : "▸"}
+            </button>
+          ) : (
+            <span className="size-4 shrink-0" />
+          )}
+          <a
+            href={`#thread-${thread.id}`}
+            className="flex min-w-0 flex-1 items-center gap-1.5"
+            onClick={(e) => {
+              e.preventDefault();
+              onSelect(thread.id, e.metaKey || e.ctrlKey);
+            }}
+          >
+            <span className="flex size-4 shrink-0 items-center justify-center">
+              <SidebarConversationStatus thread={thread} />
+            </span>
+            {showHostPill && thread.host?.name ? (
+              <span
+                className="shrink-0 rounded bg-muted px-1 py-px text-[9px] font-medium text-muted-foreground"
+                title={`Host: ${thread.host.name}`}
+              >
+                {thread.host.name}
+              </span>
+            ) : null}
+            <span className="min-w-0 flex-1 truncate text-[12px] text-foreground">
+              <ThreadTitle threadId={thread.id} />
+            </span>
+          </a>
+          {onToggleThreadSettle && depth === 0 && !busy ? (
+            <button
+              type="button"
+              aria-label={settled ? "Wake conversation" : "Settle conversation"}
+              title={settled ? "Wake conversation" : "Settle conversation"}
+              className={`shrink-0 rounded px-1 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground ${settled ? "opacity-80" : "hidden group-hover:inline-flex focus-visible:inline-flex"}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleThreadSettle(thread.id, settled);
+              }}
+            >
+              {settled ? "↺" : "✓"}
+            </button>
+          ) : null}
+        </div>
+      </ThreadActionsContextMenu>
+      {children.length && expanded ? (
+        <ul className="space-y-0.5">
+          {children.map((child) => (
+            <ThreadTreeItem
+              key={child.id}
+              thread={child}
+              childrenByParent={childrenByParent}
+              activeThreadId={activeThreadId}
+              activeAncestors={activeAncestors}
+              showHostPill={showHostPill}
+              settled={settled}
+              onSelect={onSelect}
+              depth={depth + 1}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+function formatRelativeProjectPath(path: string | undefined): string | null {
+  if (!path) return null;
+  const trimmed = path.trim();
+  if (!trimmed) return null;
+  // Convert /home/<user>/... or /Users/<user>/... into ~/...
+  const homeRelative = trimmed.replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, "~");
+  return homeRelative;
+}
+
+function BotGroupRow({
+  bot,
+  hostName,
+  pinned,
+  idleVariant = 0,
+  threads,
+  expanded,
+  onToggleExpand,
+  activeThreadId,
+  activeAncestors,
+  lastViewedThreadId,
+  settledThreadMap,
+  settings,
+  onToggleThreadSettle,
+  onOpenBot,
+  onNewChat,
+  onTogglePin,
+  onDreamNow,
+  onEditBot,
+  onDeleteBot,
+  onSelectThread,
+}: {
+  bot: BotRecordDto;
+  hostName?: string | null;
+  pinned: boolean;
+  idleVariant?: number;
+  threads: PluginSidebarThread[];
+  expanded: boolean;
+  onToggleExpand: () => void;
+  activeThreadId: string | null;
+  activeAncestors: Set<string>;
+  lastViewedThreadId: string | null;
+  settledThreadMap: Map<string, number>;
+  settings: PluginSettingsDto;
+  onToggleThreadSettle: (threadId: string, currentlySettled: boolean) => void;
+  onOpenBot: () => void;
+  onNewChat: () => void;
+  onTogglePin: () => void;
+  onDreamNow: () => void;
+  onEditBot: () => void;
+  onDeleteBot?: () => void;
+  onSelectThread: (threadId: string, split: boolean) => void;
+}) {
+  const portalScope = usePortalScopeProps();
+  const [showSettledThreads, setShowSettledThreads] = useState(false);
+  const visibleThreads = useMemo(
+    () => threads.filter((t) => !t.isArchived).sort((a, b) => b.updatedAt - a.updatedAt),
+    [threads],
+  );
+  const threadIds = useMemo(() => new Set(visibleThreads.map((t) => t.id)), [visibleThreads]);
+  const roots = useMemo(
+    () => visibleThreads.filter((t) => !t.parentThreadId || !threadIds.has(t.parentThreadId)),
+    [visibleThreads, threadIds],
+  );
+  const childrenByParent = useMemo(() => {
+    const map = new Map<string, PluginSidebarThread[]>();
+    for (const t of visibleThreads) {
+      if (!t.parentThreadId || !threadIds.has(t.parentThreadId)) continue;
+      const list = map.get(t.parentThreadId) ?? [];
+      list.push(t);
+      map.set(t.parentThreadId, list);
+    }
+    return map;
+  }, [visibleThreads, threadIds]);
+
+  const { activeRoots, settledRoots } = useMemo(() => {
+    const active: PluginSidebarThread[] = [];
+    const settledList: PluginSidebarThread[] = [];
+    const settleCutoff = Date.now() - settings.autoSettleAfterHours * 3_600_000;
+
+    const collectSubtree = (root: PluginSidebarThread): PluginSidebarThread[] => {
+      const result: PluginSidebarThread[] = [root];
+      const queue: PluginSidebarThread[] = [root];
+      while (queue.length) {
+        const cur = queue.shift()!;
+        for (const child of childrenByParent.get(cur.id) ?? []) {
+          result.push(child);
+          queue.push(child);
+        }
+      }
+      return result;
+    };
+
+    for (let i = 0; i < roots.length; i++) {
+      const root = roots[i]!;
+      const isMostRecent = i === 0;
+      const subtree = collectSubtree(root);
+      const keepActive = subtree.some(
+        (t) =>
+          t.id === activeThreadId ||
+          isThreadBusy(t) ||
+          t.isPinned ||
+          t.isUnread,
+      );
+      if (keepActive) {
+        active.push(root);
+        continue;
+      }
+      const latestActivity = subtree.reduce((max, t) => Math.max(max, t.updatedAt, t.latestAttentionAt), 0);
+      const manualSettledAt = settledThreadMap.get(root.id);
+      if (manualSettledAt !== undefined && manualSettledAt >= latestActivity) {
+        settledList.push(root);
+        continue;
+      }
+      if (!isMostRecent && settings.autoSettle && latestActivity > 0 && latestActivity < settleCutoff) {
+        settledList.push(root);
+      } else {
+        active.push(root);
+      }
+    }
+    return { activeRoots: active, settledRoots: settledList };
+  }, [roots, childrenByParent, activeThreadId, settledThreadMap, settings]);
+
+  const busy = visibleThreads.some(isThreadBusy);
+  const waiting = visibleThreads.some((t) => !t.isArchived && t.hasPendingInteraction);
+  const isCurrentBot = Boolean(activeThreadId && threadIds.has(activeThreadId));
+  const spansMultipleHosts = useMemo(() => {
+    const hosts = new Set<string>();
+    for (const t of visibleThreads) {
+      const key = t.host?.id || t.host?.name;
+      if (key) hosts.add(key);
+      if (hosts.size > 1) return true;
+    }
+    return false;
+  }, [visibleThreads]);
+
+  const relPath = formatRelativeProjectPath(bot.projectPath);
+  const subtitle =
+    bot.kind === "unaffiliated"
+      ? bot.role || "Coordinator"
+      : [relPath, hostName].filter(Boolean).join(" · ") || "Project Bot";
+
+  return (
+    <div className="mb-0.5">
+      <ContextMenu.Root>
+        <ContextMenu.Trigger asChild>
+          <div
+            className="pb-row group flex items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-accent/50"
+            aria-current={isCurrentBot && !expanded ? "page" : undefined}
+          >
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+              onClick={onOpenBot}
+              onDoubleClick={(e) => {
+                e.preventDefault();
+                onToggleExpand();
+              }}
+              title={
+                bot.kind === "project"
+                  ? `${bot.name}\n${bot.projectPath ?? ""}\n${bot.filePath}`
+                  : `${bot.name} (${bot.role || "Coordinator"})\n${bot.filePath}`
+              }
+            >
+              <span className="relative flex size-7 shrink-0 items-center justify-center">
+                <SidebarBotIcon
+                  botId={bot.id}
+                  avatar={bot.avatar}
+                  threads={visibleThreads}
+                  idleVariant={idleVariant}
+                  selected={isCurrentBot}
+                />
+                {waiting ? (
+                  <span className="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border border-background bg-amber-500" />
+                ) : busy ? (
+                  <span className="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border border-background bg-primary animate-pulse" />
+                ) : null}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1 text-xs font-medium text-foreground">
+                  <span className="truncate">{bot.name}</span>
+                  {pinned ? (
+                    <span className="shrink-0 text-[9px] text-muted-foreground" aria-label="Pinned" title="Pinned">
+                      📌
+                    </span>
+                  ) : null}
+                </span>
+                <span className="block truncate text-[10px] text-muted-foreground">{subtitle}</span>
+              </span>
+            </button>
+
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="size-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 shrink-0"
+              aria-label={`New conversation with ${bot.name}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onNewChat();
+              }}
+            >
+              +
+            </Button>
+
+            <button
+              type="button"
+              aria-label={expanded ? `Collapse ${bot.name} conversations` : `Expand ${bot.name} conversations`}
+              aria-expanded={expanded}
+              className="flex h-6 min-w-[26px] shrink-0 items-center justify-center gap-0.5 rounded px-1 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleExpand();
+              }}
+            >
+              <span>{activeRoots.length}</span>
+              <span>{expanded ? "▾" : "▸"}</span>
+            </button>
+          </div>
+        </ContextMenu.Trigger>
+        <ContextMenu.Portal>
+          <ContextMenu.Content {...portalScope} className="z-50 min-w-[160px] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
+            <ContextMenu.Item className="pb-menu-item flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-xs outline-none" onSelect={onNewChat}>
+              New conversation
+            </ContextMenu.Item>
+            {lastViewedThreadId && threadIds.has(lastViewedThreadId) ? (
+              <ContextMenu.Item className="pb-menu-item flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-xs outline-none" onSelect={() => onSelectThread(lastViewedThreadId, false)}>
+                Open last conversation
+              </ContextMenu.Item>
+            ) : null}
+            <ContextMenu.Separator className="my-1 h-px bg-border" />
+            <ContextMenu.Item className="pb-menu-item flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-xs outline-none" onSelect={onTogglePin}>
+              {pinned ? "Unpin bot" : "Pin bot"}
+            </ContextMenu.Item>
+            <ContextMenu.Item className="pb-menu-item flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-xs outline-none" onSelect={onDreamNow}>
+              Dream now 🌙
+            </ContextMenu.Item>
+            <ContextMenu.Item className="pb-menu-item flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-xs outline-none" onSelect={onEditBot}>
+              Edit bot…
+            </ContextMenu.Item>
+            {onDeleteBot ? (
+              <ContextMenu.Item className="pb-menu-item flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-xs text-destructive outline-none" onSelect={onDeleteBot}>
+                Delete bot
+              </ContextMenu.Item>
+            ) : null}
+          </ContextMenu.Content>
+        </ContextMenu.Portal>
+      </ContextMenu.Root>
+
+      {expanded ? (
+        <div className="ml-2 border-l border-border/50 pl-1 py-0.5">
+          {activeRoots.length === 0 && settledRoots.length === 0 ? (
+            <div className="px-3 py-1 text-[11px] text-muted-foreground">No conversations yet.</div>
+          ) : (
+            <>
+              {activeRoots.length > 0 ? (
+                <ul className="space-y-0.5">
+                  {activeRoots.map((thread) => (
+                    <ThreadTreeItem
+                      key={thread.id}
+                      thread={thread}
+                      childrenByParent={childrenByParent}
+                      activeThreadId={activeThreadId}
+                      activeAncestors={activeAncestors}
+                      showHostPill={spansMultipleHosts}
+                      settled={false}
+                      onToggleThreadSettle={onToggleThreadSettle}
+                      onSelect={onSelectThread}
+                    />
+                  ))}
+                </ul>
+              ) : null}
+              {settledRoots.length > 0 ? (
+                <div className={activeRoots.length > 0 ? "mt-1" : ""}>
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-accent/40 hover:text-foreground"
+                    onClick={() => setShowSettledThreads((v) => !v)}
+                  >
+                    <span>{settledRoots.length} settled</span>
+                    <span>{showSettledThreads ? "▾" : "▸"}</span>
+                  </button>
+                  {showSettledThreads ? (
+                    <ul className="mt-0.5 space-y-0.5">
+                      {settledRoots.map((thread) => (
+                        <ThreadTreeItem
+                          key={thread.id}
+                          thread={thread}
+                          childrenByParent={childrenByParent}
+                          activeThreadId={activeThreadId}
+                          activeAncestors={activeAncestors}
+                          showHostPill={spansMultipleHosts}
+                          settled={true}
+                          onToggleThreadSettle={onToggleThreadSettle}
+                          onSelect={onSelectThread}
+                        />
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
+  const sidebar = experimental_useSidebarThreads();
+  const sidebarNav = experimental_useSidebarNavigation();
+  const inboxNavItem = useMemo(
+    () => sidebarNav.items.find((item) => item.id === "inbox/inbox") ?? null,
+    [sidebarNav.items],
+  );
+  const navigate = useBbNavigate();
+  const {
+    rpc,
+    projectBots,
+    unaffiliatedBots,
+    hosts,
+    personalProjectId,
+    threadBindings,
+    lastViewed,
+    lastUsedAt,
+    pinnedBotIds,
+    settledThreads,
+    settings,
+    dreamConfig,
+    dreamThreadId,
+    loaded,
+    error,
+    refresh,
+  } = useSidebarState();
+
+  const [expandedBots, setExpandedBots] = useState<Set<string>>(() => new Set());
+  const [chatsExpanded, setChatsExpanded] = useState(false);
+  const [filterQuery, setFilterQuery] = useState("");
+  const [editor, setEditor] = useState<BotEditorTarget | null>(null);
+  const [dreamSettingsOpen, setDreamSettingsOpen] = useState(false);
+
+  // Refresh when BB's project catalog changes
+  const projectCatalogKey = JSON.stringify(sidebar.projects.map((p) => [p.id, p.name, p.isPersonal]));
+  const prevCatalogKey = useRef(projectCatalogKey);
+  useEffect(() => {
+    if (prevCatalogKey.current === projectCatalogKey) return;
+    prevCatalogKey.current = projectCatalogKey;
+    void refresh();
+  }, [projectCatalogKey, refresh]);
+
+  // Notify server when viewing a thread -> auto-generates the project's <hash6>.md on first thread entry!
+  useEffect(() => {
+    if (!activeThreadId) return;
+    void rpc
+      .call("conversation_viewed", { threadId: activeThreadId })
+      .then((res) => {
+        if (res.botId) {
+          setExpandedBots((prev) => (prev.has(res.botId!) ? prev : new Set([...prev, res.botId!])));
+        }
+        if (res.materializedNow) void refresh();
+      })
+      .catch(() => {});
+  }, [activeThreadId, rpc, refresh]);
+
+  const bindingMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const b of threadBindings) map.set(b.threadId, b.botId);
+    return map;
+  }, [threadBindings]);
+
+  const lastViewedMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const entry of lastViewed) map.set(entry.botId, entry.threadId);
+    return map;
+  }, [lastViewed]);
+
+  const lastUsedMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const entry of lastUsedAt) map.set(entry.botId, entry.lastUsedAt);
+    return map;
+  }, [lastUsedAt]);
+
+  const pinnedSet = useMemo(() => new Set(pinnedBotIds), [pinnedBotIds]);
+  const settledThreadMap = useMemo(() => new Map(settledThreads.map((t) => [t.threadId, t.settledAt])), [settledThreads]);
+  const hostNameById = useMemo(() => new Map(hosts.map((h) => [h.id, h.name])), [hosts]);
+
+  const projectBotByProjectId = useMemo(() => {
+    const map = new Map<string, BotRecordDto>();
+    for (const bot of projectBots) {
+      if (bot.projectId) map.set(bot.projectId, bot);
+    }
+    return map;
+  }, [projectBots]);
+
+  // Group threads into unaffiliated bots, project bots, and personal chats
+  const { threadsByBot, personalChats } = useMemo(() => {
+    const byBot = new Map<string, PluginSidebarThread[]>();
+    const chats: PluginSidebarThread[] = [];
+    const byId = new Map(sidebar.threads.map((t) => [t.id, t]));
+
+    const resolveUnaffiliated = (thread: PluginSidebarThread): string | null => {
+      const seen = new Set<string>();
+      let cur: PluginSidebarThread | undefined = thread;
+      while (cur && !seen.has(cur.id)) {
+        seen.add(cur.id);
+        const direct = bindingMap.get(cur.id);
+        if (direct) return direct;
+        cur = cur.parentThreadId ? byId.get(cur.parentThreadId) : undefined;
+      }
+      return null;
+    };
+
+    for (const thread of sidebar.threads) {
+      if (thread.isArchived) continue;
+      const unaffId = resolveUnaffiliated(thread);
+      if (unaffId) {
+        const list = byBot.get(unaffId) ?? [];
+        list.push(thread);
+        byBot.set(unaffId, list);
+        continue;
+      }
+      const projBot = projectBotByProjectId.get(thread.projectId);
+      if (projBot) {
+        const list = byBot.get(projBot.id) ?? [];
+        list.push(thread);
+        byBot.set(projBot.id, list);
+        continue;
+      }
+      chats.push(thread);
+    }
+    return { threadsByBot: byBot, personalChats: chats.sort((a, b) => b.updatedAt - a.updatedAt) };
+  }, [sidebar.threads, bindingMap, projectBotByProjectId]);
+
+  // Active ancestor thread IDs so nested active conversations auto-expand their parent chain
+  const activeAncestors = useMemo(() => {
+    const ancestors = new Set<string>();
+    if (!activeThreadId) return ancestors;
+    const byId = new Map(sidebar.threads.map((t) => [t.id, t]));
+    let cur = byId.get(activeThreadId)?.parentThreadId ?? null;
+    while (cur && !ancestors.has(cur)) {
+      ancestors.add(cur);
+      cur = byId.get(cur)?.parentThreadId ?? null;
+    }
+    return ancestors;
+  }, [activeThreadId, sidebar.threads]);
+
+  // Auto-unfold a bot when it transitions from idle to busy/waiting
+  const busyBotsKey = useMemo(
+    () =>
+      [...threadsByBot]
+        .filter(([, list]) => list.some(isThreadBusy))
+        .map(([id]) => id)
+        .sort()
+        .join(" "),
+    [threadsByBot],
+  );
+  const prevBusyBots = useRef(new Set<string>());
+  useEffect(() => {
+    const next = new Set(busyBotsKey ? busyBotsKey.split(" ") : []);
+    const started = [...next].filter((id) => !prevBusyBots.current.has(id));
+    prevBusyBots.current = next;
+    if (started.length) {
+      setExpandedBots((prev) =>
+        started.every((id) => prev.has(id)) ? prev : new Set([...prev, ...started]),
+      );
+    }
+  }, [busyBotsKey]);
+
+  const normalizedFilter = filterQuery.trim().toLowerCase();
+
+  const sortBotsPinnedThenRecent = useCallback(
+    (list: BotRecordDto[]) => {
+      const recency = (botId: string) => {
+        const stored = lastUsedMap.get(botId) ?? 0;
+        const threadLatest = (threadsByBot.get(botId) ?? []).reduce(
+          (max, t) => Math.max(max, t.updatedAt, t.latestAttentionAt),
+          0,
+        );
+        return Math.max(stored, threadLatest);
+      };
+      return [...list].sort((a, b) => {
+        const pinA = pinnedSet.has(a.id) ? 1 : 0;
+        const pinB = pinnedSet.has(b.id) ? 1 : 0;
+        if (pinA !== pinB) return pinB - pinA;
+        const recA = recency(a.id);
+        const recB = recency(b.id);
+        if (recA !== recB) return recB - recA;
+        return a.name.localeCompare(b.name);
+      });
+    },
+    [lastUsedMap, threadsByBot, pinnedSet],
+  );
+
+  const filteredUnaffiliated = useMemo(
+    () =>
+      sortBotsPinnedThenRecent(
+        unaffiliatedBots.filter(
+          (b) =>
+            !normalizedFilter ||
+            b.name.toLowerCase().includes(normalizedFilter) ||
+            b.role.toLowerCase().includes(normalizedFilter),
+        ),
+      ),
+    [unaffiliatedBots, normalizedFilter, sortBotsPinnedThenRecent],
+  );
+
+  // Sort projects: pinned first, then most recently used, then alphabetically
+  const sortedFilteredProjects = useMemo(
+    () =>
+      sortBotsPinnedThenRecent(
+        projectBots.filter(
+          (b) =>
+            !normalizedFilter ||
+            b.name.toLowerCase().includes(normalizedFilter) ||
+            (b.projectPath?.toLowerCase().includes(normalizedFilter) ?? false),
+        ),
+      ),
+    [projectBots, normalizedFilter, sortBotsPinnedThenRecent],
+  );
+
+  const handleTogglePin = (bot: BotRecordDto) => {
+    const nextPinned = !pinnedSet.has(bot.id);
+    void rpc
+      .call("bot_pin_set", { botId: bot.id, pinned: nextPinned })
+      .then(() => void refresh())
+      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
+  };
+
+  const handleToggleThreadSettle = (threadId: string, currentlySettled: boolean) => {
+    void rpc
+      .call("thread_settle_set", { threadId, settled: !currentlySettled })
+      .then(() => void refresh())
+      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
+  };
+
+  const handleDreamNow = (bot: BotRecordDto) => {
+    if (!dreamConfig.providerId || !dreamConfig.model) {
+      toast.info("Choose a Dream agent and model first.");
+      setDreamSettingsOpen(true);
+      return;
+    }
+    const toastId = toast.loading(`Dreaming for ${bot.name}…`);
+    void rpc
+      .call("dream_run_now", { kind: bot.kind, botId: bot.id, projectId: bot.projectId, force: true })
+      .then((res) => {
+        if (res.status === "error") toast.error(res.summary, { id: toastId });
+        else toast.success(`${bot.name}: ${res.summary}`, { id: toastId });
+        void refresh();
+      })
+      .catch((e) => toast.error(e instanceof Error ? e.message : String(e), { id: toastId }));
+  };
+
+  const defaultHostId = useMemo(
+    () => hosts.find((h) => h.connected)?.id ?? hosts[0]?.id,
+    [hosts],
+  );
+
+  const toggleExpand = (botId: string) => {
+    setExpandedBots((prev) => {
+      const next = new Set(prev);
+      if (next.has(botId)) next.delete(botId);
+      else next.add(botId);
+      return next;
+    });
+  };
+
+  const openNewChat = (bot: BotRecordDto) => {
+    if (bot.kind === "unaffiliated") {
+      void rpc
+        .call("stage_compose_start", { botId: bot.id })
+        .catch(() => {})
+        .finally(() => {
+          navigate.toCompose({
+            projectId: personalProjectId || undefined,
+            hostId: defaultHostId,
+            focusPrompt: true,
+          });
+          onNavigate();
+        });
+      return;
+    }
+    void rpc.call("stage_compose_start", { botId: null }).catch(() => {});
+    navigate.toCompose({
+      projectId: bot.projectId!,
+      hostId: defaultHostId,
+      focusPrompt: true,
+    });
+    onNavigate();
+  };
+
+  const openBot = (bot: BotRecordDto) => {
+    const botThreads = (threadsByBot.get(bot.id) ?? []).sort((a, b) => b.updatedAt - a.updatedAt);
+    const remembered = lastViewedMap.get(bot.id);
+    const targetThread = (remembered && botThreads.some((t) => t.id === remembered) ? remembered : null) ?? botThreads[0]?.id;
+    if (targetThread) {
+      void rpc.call("stage_compose_start", { botId: null }).catch(() => {});
+      navigate.toThread(targetThread);
+      onNavigate();
+    } else {
+      openNewChat(bot);
+    }
+  };
+
+  const handleSelectThread = (threadId: string, split: boolean) => {
+    void rpc.call("stage_compose_start", { botId: null }).catch(() => {});
+    navigate.toThread(threadId, { split });
+    onNavigate();
+  };
+
+  return (
+    <TooltipProvider>
+      <div className="project-bots-sidebar flex h-full flex-col overflow-hidden">
+        <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-xs font-semibold tracking-wide text-foreground">Project Bots</span>
+            {inboxNavItem && (inboxNavItem.badge?.count ?? 0) > 0 ? (
+              <button
+                type="button"
+                aria-label={inboxNavItem.badge?.label ?? `${inboxNavItem.badge?.count} unresolved inbox items`}
+                title={inboxNavItem.badge?.label ?? "Unresolved inbox items"}
+                onClick={(event) => {
+                  sidebarNav.actions.activate(inboxNavItem.id, {
+                    target: event.metaKey || event.ctrlKey ? "split" : "current",
+                  });
+                  onNavigate();
+                }}
+                className="pb-inbox-badge-pulse inline-flex h-5 min-w-5 shrink-0 items-center justify-center gap-1 rounded-full border border-yellow-500 bg-yellow-400 px-1.5 font-mono text-[10px] font-semibold tabular-nums text-black transition-colors hover:bg-yellow-300"
+              >
+                <span aria-hidden="true" className="size-1.5 rounded-full bg-black/80" />
+                <span>
+                  {(inboxNavItem.badge?.count ?? 0) > 99 ? "99+" : inboxNavItem.badge?.count}
+                </span>
+              </button>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              size="sm"
+              variant={dreamConfig.enabled ? "secondary" : "ghost"}
+              className="h-6 px-1.5 text-[11px]"
+              aria-label="Dream Mode settings"
+              onClick={() => setDreamSettingsOpen(true)}
+            >
+              🌙
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => setEditor({ mode: "create-unaffiliated" })}
+            >
+              + New bot
+            </Button>
+          </div>
+        </div>
+
+        {error ? (
+          <div className="px-3 py-2 text-xs text-destructive" role="alert">
+            {error}
+          </div>
+        ) : null}
+
+        {projectBots.length + unaffiliatedBots.length > 6 ? (
+          <div className="border-b border-border/40 px-2.5 py-1.5">
+            <input
+              type="search"
+              aria-label="Filter bots and projects"
+              placeholder="Filter bots & projects…"
+              value={filterQuery}
+              onChange={(e) => setFilterQuery(e.target.value)}
+              className="h-6 w-full rounded-md border border-input bg-background/60 px-2 text-[11px] text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          </div>
+        ) : null}
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2 space-y-3">
+          {/* Unaffiliated Coordinator Bots */}
+          <div>
+            <div className="px-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Coordinators ({filteredUnaffiliated.length})
+            </div>
+            {filteredUnaffiliated.length === 0 ? (
+              <div className="px-2 py-1 text-[11px] text-muted-foreground">
+                {normalizedFilter
+                  ? "No matching coordinators."
+                  : "No unaffiliated bots yet. Create one to coordinate across projects."}
+              </div>
+            ) : (
+              filteredUnaffiliated.map((bot, idx) => (
+                <BotGroupRow
+                  key={bot.id}
+                  bot={bot}
+                  pinned={pinnedSet.has(bot.id)}
+                  idleVariant={idx % 3}
+                  threads={threadsByBot.get(bot.id) ?? []}
+                  expanded={expandedBots.has(bot.id)}
+                  onToggleExpand={() => toggleExpand(bot.id)}
+                  activeThreadId={activeThreadId}
+                  activeAncestors={activeAncestors}
+                  lastViewedThreadId={lastViewedMap.get(bot.id) ?? null}
+                  settledThreadMap={settledThreadMap}
+                  settings={settings}
+                  onToggleThreadSettle={handleToggleThreadSettle}
+                  onOpenBot={() => openBot(bot)}
+                  onNewChat={() => openNewChat(bot)}
+                  onTogglePin={() => handleTogglePin(bot)}
+                  onDreamNow={() => handleDreamNow(bot)}
+                  onEditBot={() => setEditor({ mode: "edit", bot })}
+                  onDeleteBot={() => {
+                    void rpc
+                      .call("bot_delete_unaffiliated", { botId: bot.id })
+                      .then(() => {
+                        toast.success(`Deleted ${bot.name}`);
+                        void refresh();
+                      })
+                      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
+                  }}
+                  onSelectThread={handleSelectThread}
+                />
+              ))
+            )}
+          </div>
+
+          {/* Automatic Project Bots */}
+          <div>
+            <div className="px-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Projects ({sortedFilteredProjects.length})
+            </div>
+            {!loaded ? (
+              <div className="px-2 py-1 text-[11px] text-muted-foreground">Loading projects…</div>
+            ) : sortedFilteredProjects.length === 0 ? (
+              <div className="px-2 py-1 text-[11px] text-muted-foreground">
+                {normalizedFilter ? "No matching projects." : "No projects found."}
+              </div>
+            ) : (
+              sortedFilteredProjects.map((bot, idx) => (
+                <BotGroupRow
+                  key={bot.id}
+                  bot={bot}
+                  hostName={bot.projectHostId ? hostNameById.get(bot.projectHostId) : null}
+                  pinned={pinnedSet.has(bot.id)}
+                  idleVariant={idx % 3}
+                  threads={threadsByBot.get(bot.id) ?? []}
+                  expanded={expandedBots.has(bot.id)}
+                  onToggleExpand={() => toggleExpand(bot.id)}
+                  activeThreadId={activeThreadId}
+                  activeAncestors={activeAncestors}
+                  lastViewedThreadId={lastViewedMap.get(bot.id) ?? null}
+                  settledThreadMap={settledThreadMap}
+                  settings={settings}
+                  onToggleThreadSettle={handleToggleThreadSettle}
+                  onOpenBot={() => openBot(bot)}
+                  onNewChat={() => openNewChat(bot)}
+                  onTogglePin={() => handleTogglePin(bot)}
+                  onDreamNow={() => handleDreamNow(bot)}
+                  onEditBot={() => setEditor({ mode: "edit", bot })}
+                  onSelectThread={handleSelectThread}
+                />
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Collapsible Personal Chats */}
+        <div className="border-t border-border/60">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-3 py-1.5 text-[11px] font-medium text-muted-foreground hover:bg-accent/40 hover:text-foreground"
+            onClick={() => setChatsExpanded((v) => !v)}
+          >
+            <span>Chats ({personalChats.length})</span>
+            <span>{chatsExpanded ? "▾" : "▸"}</span>
+          </button>
+          {chatsExpanded ? (
+            <div className="max-h-48 overflow-y-auto px-2 pb-2">
+              {personalChats.length === 0 ? (
+                <div className="px-2 py-1 text-[11px] text-muted-foreground">No personal chats.</div>
+              ) : (
+                <ul className="space-y-0.5">
+                  {personalChats.map((thread) => (
+                    <ThreadTreeItem
+                      key={thread.id}
+                      thread={thread}
+                      childrenByParent={new Map()}
+                      activeThreadId={activeThreadId}
+                      activeAncestors={activeAncestors}
+                      onSelect={handleSelectThread}
+                    />
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : null}
+        </div>
+
+        {dreamSettingsOpen ? (
+          <DreamSettingsDialog
+            config={dreamConfig}
+            dreamThreadId={dreamThreadId}
+            onOpenDreamThread={(id) => handleSelectThread(id, false)}
+            loadProviders={async () => (await rpc.call("dream_providers", null)).providers}
+            onSave={async (next) => {
+              await rpc.call("dream_config_set", next);
+              toast.success(next.enabled ? `Dream Mode enabled (${next.model})` : "Dream Mode settings saved");
+              void refresh();
+            }}
+            onClose={() => setDreamSettingsOpen(false)}
+          />
+        ) : null}
+
+        {editor ? (
+          <BotEditorDialog
+            target={editor}
+            onClose={() => setEditor(null)}
+            onCreateUnaffiliated={async (input) => {
+              const created = await rpc.call("bot_create_unaffiliated", input);
+              toast.success(`Created ${created.name}`);
+              void refresh();
+            }}
+            onUpdateBot={async (input) => {
+              const updated = await rpc.call("bot_update", input);
+              toast.success(`Saved ${updated.name}`);
+              void refresh();
+            }}
+            onDeleteUnaffiliated={async (botId) => {
+              await rpc.call("bot_delete_unaffiliated", { botId });
+              toast.success("Deleted bot");
+              void refresh();
+            }}
+          />
+        ) : null}
+      </div>
+    </TooltipProvider>
+  );
+}
+
+export default definePluginApp((app) => {
+  app.slots.experimental_threadHeaderAction({
+    id: "project-bot-badge",
+    title: "Project Bot",
+    component: ThreadBotHeaderBadge,
+  });
+  app.slots.experimental_threadInfoSection({
+    id: "project-bot-info",
+    group: "0_project_bot",
+    component: ThreadBotInfoSection,
+  });
+  app.slots.experimental_threadList({
+    id: "project-bots",
+    title: "Project Bots",
+    description: "Every project automatically gets a file-backed bot, plus unaffiliated coordinator bots.",
+    component: ProjectBotsSidebar,
+  });
+});
