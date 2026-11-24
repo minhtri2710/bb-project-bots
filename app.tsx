@@ -41,6 +41,7 @@ import { SpecialThreadDialog, type SpecialThreadDialogTarget } from "./component
 import { SpecialThreadBadgeIcon } from "./components/special-thread-icon";
 import { ThreadBotInfoSection } from "./components/thread-bot-badge";
 import { useInboxStore } from "./lib/inbox-store";
+import { mostRecentRootId, sortBotRoots } from "./lib/thread-order";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { Button } from "./components/ui/button";
 import { TooltipProvider } from "./components/ui/tooltip";
@@ -468,19 +469,17 @@ function BotGroupRow({
     [threads],
   );
   const threadIds = useMemo(() => new Set(visibleThreads.map((t) => t.id)), [visibleThreads]);
+  const specialIdsForBot = useMemo(() => {
+    const set = new Set<string>();
+    for (const [tid, s] of specialThreadMap) {
+      if (s.botId === bot.id) set.add(tid);
+    }
+    return set;
+  }, [specialThreadMap, bot.id]);
   const roots = useMemo(() => {
     const rawRoots = visibleThreads.filter((t) => !t.parentThreadId || !threadIds.has(t.parentThreadId));
-    if (threadOrder.length === 0) return rawRoots;
-    const rank = new Map(threadOrder.map((id, idx) => [id, idx]));
-    return [...rawRoots].sort((a, b) => {
-      const ra = rank.get(a.id);
-      const rb = rank.get(b.id);
-      if (ra !== undefined && rb !== undefined) return ra - rb;
-      if (ra !== undefined) return -1;
-      if (rb !== undefined) return 1;
-      return b.updatedAt - a.updatedAt;
-    });
-  }, [visibleThreads, threadIds, threadOrder]);
+    return sortBotRoots(rawRoots, threadOrder, specialIdsForBot);
+  }, [visibleThreads, threadIds, threadOrder, specialIdsForBot]);
   const childrenByParent = useMemo(() => {
     const map = new Map<string, PluginSidebarThread[]>();
     for (const t of visibleThreads) {
@@ -510,10 +509,24 @@ function BotGroupRow({
       return result;
     };
 
-    for (let i = 0; i < roots.length; i++) {
-      const root = roots[i]!;
-      const isMostRecent = i === 0;
+    const latestActivityByRoot = new Map<string, number>();
+    const subtreeByRoot = new Map<string, PluginSidebarThread[]>();
+    for (const root of roots) {
       const subtree = collectSubtree(root);
+      subtreeByRoot.set(root.id, subtree);
+      latestActivityByRoot.set(
+        root.id,
+        subtree.reduce((max, t) => Math.max(max, t.updatedAt, t.latestAttentionAt), 0),
+      );
+    }
+    const newestRootId = mostRecentRootId(
+      roots,
+      (root) => latestActivityByRoot.get(root.id) ?? root.updatedAt,
+    );
+
+    for (const root of roots) {
+      const isMostRecent = root.id === newestRootId;
+      const subtree = subtreeByRoot.get(root.id) ?? [root];
       const keepActive = subtree.some(
         (t) =>
           t.id === activeThreadId ||
@@ -526,7 +539,7 @@ function BotGroupRow({
         active.push(root);
         continue;
       }
-      const latestActivity = subtree.reduce((max, t) => Math.max(max, t.updatedAt, t.latestAttentionAt), 0);
+      const latestActivity = latestActivityByRoot.get(root.id) ?? 0;
       const manualSettledAt = settledThreadMap.get(root.id);
       if (manualSettledAt !== undefined && manualSettledAt >= latestActivity) {
         settledList.push(root);
@@ -552,9 +565,9 @@ function BotGroupRow({
       if (direction === "top") nextIds.unshift(item);
       else if (direction === "up") nextIds.splice(Math.max(0, idx - 1), 0, item);
       else nextIds.splice(Math.min(nextIds.length, idx + 1), 0, item);
-      onReorderThreads(bot.id, [...nextIds, ...settledRoots.map((t) => t.id)]);
+      onReorderThreads(bot.id, nextIds);
     },
-    [activeRoots, settledRoots, bot.id, onReorderThreads],
+    [activeRoots, bot.id, onReorderThreads],
   );
 
   const handleDropThread = useCallback(
@@ -570,9 +583,9 @@ function BotGroupRow({
       const nextIds = currentIds.filter((id) => id !== sourceId);
       const insertAt = nextIds.indexOf(targetThreadId) + (edge === "after" ? 1 : 0);
       nextIds.splice(insertAt, 0, sourceId);
-      onReorderThreads(bot.id, [...nextIds, ...settledRoots.map((t) => t.id)]);
+      onReorderThreads(bot.id, nextIds);
     },
-    [activeRoots, settledRoots, bot.id, dragThreadId, onReorderThreads],
+    [activeRoots, bot.id, dragThreadId, onReorderThreads],
   );
 
   const busy = visibleThreads.some(isThreadBusy);

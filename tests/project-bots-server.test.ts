@@ -524,5 +524,79 @@ describe("bb-project-bots server", () => {
       }),
     );
     expect(workerAfter.instructions).not.toContain("Work in a git worktree and message Lander");
+
+    // Rejects promoting a thread that belongs to a different bot
+    await expect(
+      host.harness.behavior.callRpc("special_thread_set", {
+        threadId: "thr_beta",
+        botId: alphaBotId,
+        name: "Sneaky",
+        icon: "shield",
+        instruction: "Should fail",
+      }),
+    ).rejects.toThrow(/belongs to bot/);
+
+    // Rejects duplicate Special thread names on the same bot (case-insensitive)
+    await host.harness.behavior.callRpc("special_thread_set", {
+      threadId: "thr_lander",
+      botId: alphaBotId,
+      name: "Reviewer",
+      icon: "shield",
+      instruction: "Review changes",
+    });
+    await expect(
+      host.harness.behavior.callRpc("special_thread_set", {
+        threadId: "thr_worker",
+        botId: alphaBotId,
+        name: "reviewer",
+        icon: "shield",
+        instruction: "Duplicate",
+      }),
+    ).rejects.toThrow(/already exists/);
+
+    // Ambiguous name routing: special thread with same name as a bot errors instead of silently shadowing
+    await host.harness.behavior.callRpc("special_thread_set", {
+      threadId: "thr_lander",
+      botId: alphaBotId,
+      name: "Beta Lib",
+      icon: "shield",
+      instruction: "Shadows Beta Lib bot name",
+    });
+    const ambiguous = await host.harness.behavior.callAgentTool(
+      "message",
+      { to: "Beta Lib", text: "Hello?" },
+      { threadId: "thr_worker", projectId: alpha.id },
+    );
+    expect(JSON.stringify(ambiguous)).toContain("ambiguous");
+  });
+
+  it("ignores malformed specialThreads and threadOrder entries in .state.json", async () => {
+    const { rootDir, host } = await setup();
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(
+      join(rootDir, ".state.json"),
+      JSON.stringify({
+        threadOrder: { bot_ok: ["thr_1", 123, ""], bot_bad: "not-an-array" },
+        specialThreads: {
+          thr_bad: { threadId: "thr_bad", name: 42, icon: "invalid" },
+          thr_mismatch: {
+            threadId: "thr_other",
+            botId: "bot_1",
+            name: "Lander",
+            icon: "merge",
+            instruction: "hi",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
+      }),
+      "utf8",
+    );
+    const state = (await host.harness.behavior.callRpc("sidebar_state", null)) as {
+      threadOrder: Array<{ botId: string; threadIds: string[] }>;
+      specialThreads: unknown[];
+    };
+    expect(state.specialThreads).toEqual([]);
+    expect(state.threadOrder).toEqual([{ botId: "bot_ok", threadIds: ["thr_1"] }]);
   });
 });

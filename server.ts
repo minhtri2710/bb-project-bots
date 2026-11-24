@@ -333,6 +333,12 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
       }
     });
 
+    bb.events.on("thread.archived", ({ thread }) => {
+      if (store.removeSpecialThread(thread.id)) {
+        publish();
+      }
+    });
+
     // Automatic Dream Mode background schedule (checks every 15 minutes for bots due to dream)
     bb.background.schedule("dream-sweep", "*/15 * * * *", async () => {
       await runDreamSweep(bb, store, publish);
@@ -540,12 +546,26 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
       },
 
       special_thread_set: async (input) => {
-        const { record } = store.setSpecialThread(input);
-        try {
-          await bb.sdk.threads.update({ threadId: input.threadId, title: record.name });
-        } catch {
-          // Best-effort title sync
+        const thread = await bb.sdk.threads.get({ threadId: input.threadId });
+        if (!thread || thread.deletedAt !== null) {
+          throw new Error(`Thread "${input.threadId}" not found.`);
         }
+        if (thread.archivedAt !== null) {
+          throw new Error(`Cannot promote archived thread "${input.threadId}".`);
+        }
+        const resolved = await resolveThreadBot(bb, store, input.threadId, false);
+        if (!resolved) {
+          throw new Error(`Thread "${input.threadId}" does not belong to any bot.`);
+        }
+        if (resolved.bot.id !== input.botId) {
+          throw new Error(
+            `Thread "${input.threadId}" belongs to bot "${resolved.bot.name}" (${resolved.bot.id}), not "${input.botId}".`,
+          );
+        }
+        const { record } = store.setSpecialThread({
+          ...input,
+          botId: resolved.bot.id,
+        });
         publish();
         return record;
       },

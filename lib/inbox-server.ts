@@ -16,7 +16,7 @@ import {
   gist,
   replyText,
 } from "./inbox-questions";
-import { resolveThreadBot, sendBotMessage } from "./messaging";
+import { findBotTarget, resolveThreadBot, sendBotMessage } from "./messaging";
 
 const NOT_OPEN = "These questions are no longer open";
 const THREAD_ID_RE = /^thr_[a-zA-Z0-9_-]+$/;
@@ -164,6 +164,16 @@ export function createInboxService(
       @botId, @botName, @botRole, @botColor, @botKind,
       @threadTitle, @projectId, @projectName
     )
+  `);
+  const pruneProseStmt = db.prepare(`
+    DELETE FROM inbox_messages
+    WHERE state = 'prose'
+      AND id NOT IN (
+        SELECT id FROM inbox_messages
+        WHERE state = 'prose'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 500
+      )
   `);
   const getByIdStmt = db.prepare(`SELECT * FROM inbox_messages WHERE id = ?`);
   const listOpenStmt = db.prepare(
@@ -514,6 +524,11 @@ export function createInboxService(
           projectName: meta.projectName,
         });
         const id = Number(info.lastInsertRowid);
+        try {
+          pruneProseStmt.run();
+        } catch {
+          // Best-effort prose retention cleanup
+        }
         bb.realtime.publish(INBOX_REALTIME_CHANNEL, {
           kind: "prose",
           messageId: id,
@@ -660,10 +675,49 @@ export function createInboxService(
     const senderBot = await resolveBotSummary(ctx.threadId);
     if (senderBot) {
       const needle = to.toLowerCase();
-      const matchingSpecial = store
+      const matchingSpecials = store
         .listSpecialThreadsForBot(senderBot.id)
-        .find((s) => s.name.toLowerCase() === needle && s.threadId !== ctx.threadId);
+        .filter((s) => s.name.toLowerCase() === needle && s.threadId !== ctx.threadId);
+      if (matchingSpecials.length > 1) {
+        return errorResult(
+          `Multiple Special threads match "${to}" (${matchingSpecials.map((s) => s.threadId).join(", ")}). Use the exact thread ID.`,
+        );
+      }
+      const matchingSpecial = matchingSpecials[0];
       if (matchingSpecial) {
+        // Check for ambiguity with a bot of the exact same name
+        let botConflict: { bot: { id: string; name: string } } | null = null;
+        try {
+          botConflict = await findBotTarget(bb, store, to);
+        } catch {
+          botConflict = null;
+        }
+        if (botConflict) {
+          return errorResult(
+            `"${to}" is ambiguous: it matches both Special thread "${matchingSpecial.name}" (${matchingSpecial.threadId}) and bot "${botConflict.bot.name}" (${botConflict.bot.id}). Use the exact thread ID or bot ID.`,
+          );
+        }
+
+        // Verify special thread is still active (not archived or deleted)
+        try {
+          const targetThread = (await bb.sdk.threads.get({
+            threadId: matchingSpecial.threadId,
+          })) as { archivedAt?: number | null; deletedAt?: number | null } | null;
+          if (!targetThread || targetThread.deletedAt != null || targetThread.archivedAt != null) {
+            store.removeSpecialThread(matchingSpecial.threadId);
+            publishSidebar();
+            return errorResult(
+              `Special thread "${matchingSpecial.name}" (${matchingSpecial.threadId}) is archived or deleted and has been demoted.`,
+            );
+          }
+        } catch {
+          store.removeSpecialThread(matchingSpecial.threadId);
+          publishSidebar();
+          return errorResult(
+            `Special thread "${matchingSpecial.name}" (${matchingSpecial.threadId}) no longer exists and has been demoted.`,
+          );
+        }
+
         const framed = formatDirectThreadMessage(ctx.threadId, senderBot, text);
         try {
           await bb.sdk.threads.send({

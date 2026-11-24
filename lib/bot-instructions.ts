@@ -54,6 +54,8 @@ function buildSpecialThreadsSection(
       "### Standing contract advertised to all other threads of this bot",
       `Other threads of ${bot.name} are instructed to contact you via \`message({ to: "${self.threadId}", text: "..." })\` (or \`to: "${self.name}"\`):`,
       self.instruction,
+      "",
+      "When acting on work sent to you by another Special thread, reply back to the sender rather than forwarding in a loop or sending acknowledgement-only replies.",
     );
   }
 

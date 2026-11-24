@@ -12,7 +12,7 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { BotAvatar } from "./appearance";
-import type { SpecialThreadDto, SpecialThreadIconId } from "../contract";
+import { specialThreadSchema, type SpecialThreadDto, type SpecialThreadIconId } from "../contract";
 import {
   applyMemoryOperation,
   DEFAULT_MEMORY_TEMPLATE,
@@ -184,6 +184,29 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
     try {
       const parsed = JSON.parse(readFileSync(statePath, "utf8")) as Partial<RuntimeState>;
       const dc = parsed.dreamConfig;
+      const rawThreadOrder =
+        parsed.threadOrder && typeof parsed.threadOrder === "object" && !Array.isArray(parsed.threadOrder)
+          ? parsed.threadOrder
+          : {};
+      const cleanThreadOrder: Record<string, string[]> = {};
+      for (const [botId, ids] of Object.entries(rawThreadOrder)) {
+        if (!Array.isArray(ids)) continue;
+        const validIds = ids.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+        if (validIds.length > 0) cleanThreadOrder[botId] = [...new Set(validIds)];
+      }
+
+      const rawSpecials =
+        parsed.specialThreads && typeof parsed.specialThreads === "object" && !Array.isArray(parsed.specialThreads)
+          ? parsed.specialThreads
+          : {};
+      const cleanSpecials: Record<string, SpecialThreadRecord> = {};
+      for (const [threadId, value] of Object.entries(rawSpecials)) {
+        const res = specialThreadSchema.safeParse(value);
+        if (res.success && res.data.threadId === threadId) {
+          cleanSpecials[threadId] = res.data;
+        }
+      }
+
       return {
         threadBindings: parsed.threadBindings && typeof parsed.threadBindings === "object" ? parsed.threadBindings : {},
         lastViewed: parsed.lastViewed && typeof parsed.lastViewed === "object" ? parsed.lastViewed : {},
@@ -191,8 +214,8 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
         pinnedBotIds: Array.isArray(parsed.pinnedBotIds) ? parsed.pinnedBotIds.filter((x): x is string => typeof x === "string") : [],
         settledBotIds: Array.isArray(parsed.settledBotIds) ? parsed.settledBotIds.filter((x): x is string => typeof x === "string") : [],
         settledThreads: parsed.settledThreads && typeof parsed.settledThreads === "object" ? parsed.settledThreads : {},
-        threadOrder: parsed.threadOrder && typeof parsed.threadOrder === "object" ? parsed.threadOrder : {},
-        specialThreads: parsed.specialThreads && typeof parsed.specialThreads === "object" ? parsed.specialThreads : {},
+        threadOrder: cleanThreadOrder,
+        specialThreads: cleanSpecials,
         dreamConfig: {
           enabled: Boolean(dc?.enabled),
           providerId: typeof dc?.providerId === "string" ? dc.providerId : "",
@@ -722,12 +745,25 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
     rolePrompt?: string;
   }): { record: SpecialThreadRecord; created: boolean } {
     const state = loadState();
+    const trimmedName = input.name.trim();
+    const lowerName = trimmedName.toLowerCase();
+    const duplicate = Object.values(state.specialThreads).find(
+      (s) =>
+        s.botId === input.botId &&
+        s.threadId !== input.threadId &&
+        s.name.toLowerCase() === lowerName,
+    );
+    if (duplicate) {
+      throw new Error(
+        `A Special thread named "${duplicate.name}" (${duplicate.threadId}) already exists on this bot. Pick a unique name.`,
+      );
+    }
     const existing = state.specialThreads[input.threadId];
     const now = Date.now();
     const record: SpecialThreadRecord = {
       threadId: input.threadId,
       botId: input.botId,
-      name: input.name.trim(),
+      name: trimmedName,
       icon: input.icon,
       ...(input.color ? { color: input.color } : {}),
       instruction: input.instruction.trim(),
