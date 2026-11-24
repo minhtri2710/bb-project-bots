@@ -1,17 +1,17 @@
 ---
 name: inbox
-description: Unified `message({ text, to?, query? })` tool for user decision cards in the Inbox and asynchronous messaging to bots, threads, or parent threads.
+description: Primary communication tool `message({ text, to?, query? })` — always renders body as chat prose for the user, routes cross-bot/thread messages with `to`, and queues important clarifications in the Inbox with `query`.
 ---
 
-# Unified `message` Tool & Decision Inbox
+# `message` Tool & Decision Inbox
 
-Use `message({ text, to?, query? })` to ask the user for decisions or to send asynchronous messages to other bots and threads.
+Prefer `message({ text, to?, query? })` for all communication with the user and across bots/threads.
 
 ## Schema
 
 ```ts
 message({
-  text: string, // Message body (Markdown supported; bold lead or first line becomes the Inbox title)
+  text: string, // Markdown body — for to="user", always rendered in the chat as prose (and bold lead / first line becomes the Inbox title when `query` is set)
   to?: string,  // Default "user". Also accepts "parent", a thread ID ("thr_..."), or a bot ID / project ID / exact bot name from list_bots.
   query?: Array<{
     text: string,
@@ -30,12 +30,16 @@ message({
 })
 ```
 
-## Routing & Rules
+## How it works
 
-- **`to: "user"` (default) with `query`**: creates an Inbox item awaiting decision, increments the unresolved Inbox badge, and renders an interactive answer card inline in the thread and in the Inbox. Do not repeat the options in prose; end your turn if you need the answer before continuing.
-- **`to: "user"` without `query`**: thread prose only — skips the Inbox completely (no Inbox item, no badge, no decision card).
-- **`to: "<botId | projectId | botName>"`**: sends an asynchronous attributed message to that bot (continuing its latest thread or spawning one automatically).
-- **`to: "thr_..."`**: sends an asynchronous message directly to that thread.
-- **`to: "parent"`**: sends an asynchronous message to the current thread's parent thread (errors if there is no parent).
-- `query` is only valid when `to` is `"user"` (or omitted).
-- `choice` / `multi` require at least two options with unique labels and unique `key`s; never include `"Something else"` or `"Other"` (the card adds `"Something else…"` and a note field automatically).
+- **Communicating with the user (`to: "user"`, default)**:
+  - `text` is **always** added to the chat as prose — do not repeat it in your final reply.
+  - **Without `query`**: renders as plain Markdown prose in the chat and **skips the Inbox** (no Inbox item, no badge increment, no decision card).
+  - **With `query`**: renders the body + an interactive decision card inline in the thread **and** queues it in the Inbox (incrementing the unresolved badge). End your turn if you need the user's answer before continuing; their reply is delivered back to this thread automatically.
+- **Cross-bot / cross-thread comms (`to`)**:
+  - `to: "<botId | projectId | botName>"`: sends an asynchronous attributed message to that bot (continuing its latest thread or spawning one automatically).
+  - `to: "thr_..."`: sends an asynchronous message directly to that thread.
+  - `to: "parent"`: sends an asynchronous message to the current thread's parent thread (errors if there is no parent).
+- **Rules**:
+  - `query` is only valid when `to` is `"user"` (or omitted).
+  - `choice` / `multi` require at least two options with unique labels and unique `key`s; never include `"Something else"` or `"Other"` (the card adds `"Something else…"` and a note field automatically).

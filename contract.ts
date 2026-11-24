@@ -155,7 +155,7 @@ export const messageToolSchema = z.object({
     .string()
     .min(1)
     .describe(
-      "Message body. With to='user' and query, Markdown is supported and the bold lead or first line is shown as the Inbox title. With to='user' and no query, skips Inbox (thread prose only).",
+      "Message body (Markdown supported). For to='user', this text is always added to the chat as prose; with query, its bold lead or first line also becomes the Inbox title.",
     ),
   to: z
     .string()
@@ -169,7 +169,7 @@ export const messageToolSchema = z.object({
     .array(questionSchema)
     .optional()
     .describe(
-      'With to="user", the decisions the message asks, shown as an interactive answer card in the Inbox and inline in the thread: choice (one option), multi (any), confirm (yes/no), text (typed), scale (min–max with end labels). The card adds "Something else…" and a note field itself. Omit query for plain prose (skips Inbox).',
+      'With to="user", optional structured decisions/clarifications to get answered in the Inbox and inline in the thread: choice (one option), multi (any), confirm (yes/no), text (typed), scale (min–max with end labels). The card adds "Something else…" and a note field itself. Omit query for normal chat prose (skips Inbox).',
     ),
 });
 export type MessageToolInput = z.infer<typeof messageToolSchema>;
@@ -196,7 +196,7 @@ export const botSummarySchema = z.object({
 });
 export type BotSummary = z.infer<typeof botSummarySchema>;
 
-export const messageStateSchema = z.enum(["open", "answered", "dismissed"]);
+export const messageStateSchema = z.enum(["open", "answered", "dismissed", "prose"]);
 export type MessageState = z.infer<typeof messageStateSchema>;
 
 export const inboxMessageSchema = z.object({

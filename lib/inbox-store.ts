@@ -138,7 +138,9 @@ export function useInboxStore() {
     void refresh();
   }, [refresh, connectionState]);
 
-  useRealtime(INBOX_REALTIME_CHANNEL, () => {
+  useRealtime(INBOX_REALTIME_CHANNEL, (payload) => {
+    const p = payload as { kind?: string } | null;
+    if (p?.kind === "prose") return;
     void refresh();
   });
 

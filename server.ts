@@ -162,13 +162,13 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
       inbox.openQuestionsInstruction(threadId),
     );
 
-    // Unified message({ text, to?, query? }) tool for user Inbox decisions and inter-bot/thread messaging
+    // Unified message({ text, to?, query? }) tool for all user and cross-bot communication
     bb.agents.registerTool({
       name: "message",
       description:
-        'Send a message to the user (default to="user"), to another bot (by botId, projectId, or exact bot name), to a thread (thr_...), or to "parent". With to="user" and `query`, creates a decision item in the Inbox and renders an interactive answer card (choice, multi, confirm, text, scale) inline in the thread. With to="user" and no `query`, skips the Inbox (plain thread prose only).',
+        'Primary communication tool. Sends `text` to the user (default to="user"), to another bot (by botId, projectId, or exact bot name), to a thread (thr_...), or to "parent". For to="user", the body is always added to the chat as prose (do not repeat it in your reply). Add `query` when you need important clarifications or decisions answered — that also queues an interactive answer card in the Inbox.',
       instructions:
-        'Use `message({ text, to?, query? })` for both user decisions and inter-bot/thread messaging. For user decisions, call `message({ text, query })` (defaults to `to: "user"`) — it renders automatically inline and in the Inbox, so do not repeat the options in prose. Omit `query` only for plain prose (skips Inbox). To message another bot or thread, pass `to: "<botId | projectId | botName | threadId | parent>"` without `query`.',
+        'Prefer `message({ text, to?, query? })` for all communication. With default `to: "user"`, `text` is always rendered in the chat as prose (skipping the Inbox when `query` is omitted) — do not repeat it in your final reply. Add `query` whenever you need important clarifications or decisions answered (renders inline + queues in the Inbox). Use `to: "<botId | projectId | botName | threadId | parent>"` (without `query`) for cross-bot or cross-thread communication.',
       presentation: {
         label: {
           pending: "Sending message",

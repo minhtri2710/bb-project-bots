@@ -28,7 +28,7 @@ type DbRow = {
   turn_id: string | null;
   text: string;
   questions_json: string | null;
-  state: "open" | "answered" | "dismissed";
+  state: "open" | "answered" | "dismissed" | "prose";
   answer_text: string | null;
   created_at: number;
   resolved_at: number | null;
@@ -150,6 +150,17 @@ export function createInboxService(
       thread_title, project_id, project_name
     ) VALUES (
       @threadId, @turnId, @text, @questionsJson, 'open', @createdAt,
+      @botId, @botName, @botRole, @botColor, @botKind,
+      @threadTitle, @projectId, @projectName
+    )
+  `);
+  const insertProseStmt = db.prepare(`
+    INSERT INTO inbox_messages (
+      thread_id, turn_id, text, questions_json, state, created_at, resolved_at,
+      bot_id, bot_name, bot_role, bot_color, bot_kind,
+      thread_title, project_id, project_name
+    ) VALUES (
+      @threadId, @turnId, @text, NULL, 'prose', @createdAt, @createdAt,
       @botId, @botName, @botRole, @botColor, @botKind,
       @threadTitle, @projectId, @projectName
     )
@@ -483,8 +494,32 @@ export function createInboxService(
 
     // 1. User recipient (default)
     if (to === "user") {
+      const meta = await resolveThreadMeta(ctx.threadId);
+      const createdAt = Date.now();
+
+      // Without query -> render inline in chat as prose, skip Inbox completely
       if (input.query === undefined) {
-        return "Delivered as thread prose only (skipped Inbox because no `query` was provided).";
+        const info = insertProseStmt.run({
+          threadId: ctx.threadId,
+          turnId: meta.turnId,
+          text,
+          createdAt,
+          botId: meta.bot?.id ?? null,
+          botName: meta.bot?.name ?? null,
+          botRole: meta.bot?.role ?? null,
+          botColor: meta.bot?.color ?? null,
+          botKind: meta.bot?.kind ?? null,
+          threadTitle: meta.threadTitle,
+          projectId: meta.projectId,
+          projectName: meta.projectName,
+        });
+        const id = Number(info.lastInsertRowid);
+        bb.realtime.publish(INBOX_REALTIME_CHANNEL, {
+          kind: "prose",
+          messageId: id,
+          threadId: ctx.threadId,
+        });
+        return `Message #${id} posted to the chat as prose (skipped Inbox). Do not repeat this text in your reply.`;
       }
 
       let normalizedQuery: Question[];
@@ -496,8 +531,6 @@ export function createInboxService(
         );
       }
 
-      const meta = await resolveThreadMeta(ctx.threadId);
-      const createdAt = Date.now();
       const info = insertStmt.run({
         threadId: ctx.threadId,
         turnId: meta.turnId,
@@ -522,7 +555,7 @@ export function createInboxService(
         threadId: ctx.threadId,
       });
 
-      return `Message #${id} sent to the user's Inbox (awaiting decision). It renders automatically as an interactive card inline in this thread and in the Inbox — do not repeat the questions or options in prose. End your turn if you need the user's answer before continuing; their reply will be delivered here automatically.`;
+      return `Message #${id} posted to the chat and added to the user's Inbox (awaiting decision). Do not repeat the text or options in your reply. End your turn if you need the user's answer before continuing; their reply will be delivered here automatically.`;
     }
 
     // Non-user targets do not accept `query`

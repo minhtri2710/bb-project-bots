@@ -7,6 +7,7 @@ import {
   experimental_useRpcKeyedQuery,
   experimental_useSidebarNavigation,
   experimental_useSidebarThreads,
+  Markdown,
   ThreadTitle,
   useBbNavigate,
   useRealtime,
@@ -1163,14 +1164,24 @@ function InlineThreadMessages({ message }: ExperimentalMessageMetadataProps) {
 
   return (
     <div className="mb-2 space-y-2">
-      {matching.map((item) => (
-        <MessageCard
-          key={item.id}
-          message={item}
-          onAnswer={(reply) => handleAnswer(item.id, reply)}
-          onDismiss={() => handleDismiss(item.id)}
-        />
-      ))}
+      {matching.map((item) =>
+        item.state === "prose" ? (
+          <div
+            key={item.id}
+            data-inbox-prose={item.id}
+            className="text-sm leading-relaxed text-foreground"
+          >
+            <Markdown content={item.text} />
+          </div>
+        ) : (
+          <MessageCard
+            key={item.id}
+            message={item}
+            onAnswer={(reply) => handleAnswer(item.id, reply)}
+            onDismiss={() => handleDismiss(item.id)}
+          />
+        ),
+      )}
     </div>
   );
 }
@@ -1211,6 +1222,17 @@ function InboxMessageDirective({ attributes }: PluginMessageDirectiveProps) {
   });
 
   if (!validId || !item) return null;
+
+  if (item.state === "prose") {
+    return (
+      <div
+        data-inbox-prose={item.id}
+        className="text-sm leading-relaxed text-foreground"
+      >
+        <Markdown content={item.text} />
+      </div>
+    );
+  }
 
   return (
     <MessageCard
