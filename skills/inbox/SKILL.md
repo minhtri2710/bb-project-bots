@@ -33,7 +33,7 @@ message({
 ## How it works
 
 - **Communicating with the user (`to: "user"`, default)**:
-  - `text` is **always** added to the chat as prose — do not repeat it in your final reply.
+  - After `message` succeeds, copy its returned `previewDirective` (`::inbox-message{id="..."}`) into your reply **exactly once on its own line** (not in backticks or a code fence) and do not repeat `text` — BB renders the message right there in chat.
   - **Without `query`**: renders as plain Markdown prose in the chat and **skips the Inbox** (no Inbox item, no badge increment, no decision card).
   - **With `query`**: renders the body + an interactive decision card inline in the thread **and** queues it in the Inbox (incrementing the unresolved badge). End your turn if you need the user's answer before continuing; their reply is delivered back to this thread automatically.
 - **Cross-bot / cross-thread comms (`to`)**:

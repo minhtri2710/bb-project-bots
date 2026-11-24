@@ -519,7 +519,12 @@ export function createInboxService(
           messageId: id,
           threadId: ctx.threadId,
         });
-        return `Message #${id} posted to the chat as prose (skipped Inbox). Do not repeat this text in your reply.`;
+        return JSON.stringify({
+          id,
+          mode: "prose",
+          previewDirective: `::inbox-message{id="${id}"}`,
+          instruction: `Emit ::inbox-message{id="${id}"} once on its own line in your reply (not in backticks or a code fence, and do not repeat the message text) so it renders in chat.`,
+        });
       }
 
       let normalizedQuery: Question[];
@@ -555,7 +560,12 @@ export function createInboxService(
         threadId: ctx.threadId,
       });
 
-      return `Message #${id} posted to the chat and added to the user's Inbox (awaiting decision). Do not repeat the text or options in your reply. End your turn if you need the user's answer before continuing; their reply will be delivered here automatically.`;
+      return JSON.stringify({
+        id,
+        mode: "inbox",
+        previewDirective: `::inbox-message{id="${id}"}`,
+        instruction: `Queued in the user's Inbox awaiting decision. Emit ::inbox-message{id="${id}"} once on its own line in your reply (not in backticks or a code fence, and do not repeat the message text or options) so the interactive decision card renders in chat. End your turn if you need their answer before continuing.`,
+      });
     }
 
     // Non-user targets do not accept `query`

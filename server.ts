@@ -166,9 +166,9 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
     bb.agents.registerTool({
       name: "message",
       description:
-        'Primary communication tool. Sends `text` to the user (default to="user"), to another bot (by botId, projectId, or exact bot name), to a thread (thr_...), or to "parent". For to="user", the body is always added to the chat as prose (do not repeat it in your reply). Add `query` when you need important clarifications or decisions answered — that also queues an interactive answer card in the Inbox.',
+        'Primary communication tool. Sends `text` to the user (default to="user"), to another bot (by botId, projectId, or exact bot name), to a thread (thr_...), or to "parent". For to="user", copy the returned `previewDirective` onto its own line in your response (not in a code fence, without repeating `text`) so BB renders it in chat. Add `query` when you need important clarifications or decisions answered — that also queues an interactive answer card in the Inbox.',
       instructions:
-        'Prefer `message({ text, to?, query? })` for all communication. With default `to: "user"`, `text` is always rendered in the chat as prose (skipping the Inbox when `query` is omitted) — do not repeat it in your final reply. Add `query` whenever you need important clarifications or decisions answered (renders inline + queues in the Inbox). Use `to: "<botId | projectId | botName | threadId | parent>"` (without `query`) for cross-bot or cross-thread communication.',
+        'Prefer `message({ text, to?, query? })` for all communication. With default `to: "user"`, always copy the returned `previewDirective` (`::inbox-message{id="..."}`) into your response exactly once as a standalone line (not in backticks or a code fence) and do not repeat `text` — BB renders it as chat prose (skipping the Inbox when `query` is omitted) or as an interactive decision card + Inbox item when `query` is provided. Use `to: "<botId | projectId | botName | threadId | parent>"` (without `query`) for cross-bot or cross-thread communication.',
       presentation: {
         label: {
           pending: "Sending message",
