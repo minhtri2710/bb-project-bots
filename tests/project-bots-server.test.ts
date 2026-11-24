@@ -85,7 +85,7 @@ async function setup() {
 
   const host = createFakePluginHost({
     pluginId: "bb-project-bots",
-    agentSkillIds: ["project-bots"],
+    agentSkillIds: ["project-bots", "inbox"],
     sdk: {
       projects: {
         list: async (args) => (args?.includePersonal ? [alpha, beta, personal] : [alpha, beta]),
@@ -227,11 +227,11 @@ describe("bb-project-bots server", () => {
       }),
     );
     expect(cfg.tools.map((t) => t.name)).toEqual(
-      expect.arrayContaining(["update_memory_state", "list_bots", "inspect_bot"]),
+      expect.arrayContaining(["update_memory_state", "list_bots", "inspect_bot", "message"]),
     );
     expect(cfg.tools.map((t) => t.name)).not.toContain("message_bot");
     expect(cfg.tools.map((t) => t.name)).not.toContain("manage_goals");
-    expect(cfg.skills).toEqual(["project-bots"]);
+    expect(cfg.skills).toEqual(expect.arrayContaining(["project-bots", "inbox"]));
     expect(cfg.instructions).toContain("unaffiliated coordinator bot");
     expect(cfg.instructions).toContain("do **NOT** perform direct repository work");
 
@@ -243,12 +243,16 @@ describe("bb-project-bots server", () => {
     );
     expect(listRes.total).toBe(3); // Chief + Alpha + Beta
 
-    // Deliver message via RPC (used by unified message({ to, text }) tool) -> auto-spawns a thread in Alpha & materializes its <hash6>.md
-    const msgRes = (await host.harness.behavior.callRpc("deliver_message", {
-      senderThreadId: created.threadId,
-      target: "Alpha App",
-      message: "Please prepare the v2 release.",
-    })) as { botId: string; botName: string; threadId: string; spawned: boolean };
+    // Deliver message via unified message({ to, text }) tool -> auto-spawns a thread in Alpha & materializes its <hash6>.md
+    const msgRes = JSON.parse(
+      String(
+        await host.harness.behavior.callAgentTool(
+          "message",
+          { to: "Alpha App", text: "Please prepare the v2 release." },
+          { threadId: created.threadId, projectId: personal.id },
+        ),
+      ),
+    ) as { botId: string; botName: string; threadId: string; spawned: boolean };
     expect(msgRes.spawned).toBe(true);
     expect(msgRes.botName).toBe("Alpha App");
     expect(spawnMock).toHaveBeenCalledTimes(2); // 1 for Chief's thread + 1 auto-spawned for Alpha

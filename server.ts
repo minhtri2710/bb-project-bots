@@ -4,11 +4,13 @@ import {
   inspectBotToolSchema,
   listBotsToolSchema,
   memoryToolSchema,
+  messageToolSchema,
   rpcContract,
 } from "./contract";
 import { buildBotInstructions, MEMORY_TOOL_GUIDANCE } from "./lib/bot-instructions";
 import { createBotStore, type BotRecord, type ProjectSummary } from "./lib/bot-store";
 import { DREAM_MARKER, runDreamForBot, runDreamSweep } from "./lib/dream-runner";
+import { createInboxService } from "./lib/inbox-server";
 import {
   findBotTarget,
   getPersonalProjectId,
@@ -35,6 +37,7 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
   return async function plugin(bb: BbPluginApi) {
     const store = createBotStore(options?.rootDir);
     const publish = () => bb.realtime.publish(CHANGED, { updatedAt: Date.now() });
+    const inbox = createInboxService(bb, store, publish);
 
     const settingsHandle = bb.settings.define({
       autoSettle: {
@@ -108,8 +111,8 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
 
     function configForBot(bot: BotRecord) {
       return {
-        tools: ["update_memory_state", "list_bots", "inspect_bot"],
-        skills: ["project-bots"],
+        tools: ["update_memory_state", "list_bots", "inspect_bot", "message"],
+        skills: ["project-bots", "inbox"],
         instructions: buildBotInstructions(bot),
       };
     }
@@ -152,7 +155,29 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
         if (created) publish();
         return configForBot(bot);
       }
-      return { tools: [], skills: [] };
+      return { tools: ["message"], skills: ["inbox"] };
+    });
+
+    bb.agents.contributeInstructions(({ threadId }) =>
+      inbox.openQuestionsInstruction(threadId),
+    );
+
+    // Unified message({ text, to?, query? }) tool for user Inbox decisions and inter-bot/thread messaging
+    bb.agents.registerTool({
+      name: "message",
+      description:
+        'Send a message to the user (default to="user"), to another bot (by botId, projectId, or exact bot name), to a thread (thr_...), or to "parent". With to="user" and `query`, creates a decision item in the Inbox and renders an interactive answer card (choice, multi, confirm, text, scale) inline in the thread. With to="user" and no `query`, skips the Inbox (plain thread prose only).',
+      instructions:
+        'Use `message({ text, to?, query? })` for both user decisions and inter-bot/thread messaging. For user decisions, call `message({ text, query })` (defaults to `to: "user"`) — it renders automatically inline and in the Inbox, so do not repeat the options in prose. Omit `query` only for plain prose (skips Inbox). To message another bot or thread, pass `to: "<botId | projectId | botName | threadId | parent>"` without `query`.',
+      presentation: {
+        label: {
+          pending: "Sending message",
+          completed: "Sent message",
+        },
+        icon: { glyph: "Inbox" },
+      },
+      parameters: messageToolSchema,
+      execute: (input, ctx) => inbox.executeMessageTool(input, ctx),
     });
 
     // 1. update_memory_state: manages the bot's markdown file directly
@@ -678,6 +703,57 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
           instructions: cfg.instructions,
         };
       },
+
+      inbox_list: async (input) =>
+        inbox.listInbox(input?.includeResolvedToday ?? true),
+
+      thread_messages: async ({ threadId }) => ({
+        messages: inbox.listThreadMessages(threadId),
+      }),
+
+      get_message: async ({ messageId }) => ({
+        message: inbox.getMessage(messageId),
+      }),
+
+      answer_message: async ({ messageId, answers, note, text }) => ({
+        message: await inbox.answerMessage(messageId, { answers, note, text }),
+      }),
+
+      dismiss_message: async ({ messageId }) => ({
+        message: inbox.dismissMessage(messageId),
+      }),
+
+      open_counts_by_thread: async ({ keys }) =>
+        inbox.openCountsByThread(keys),
+    });
+
+    bb.onInstall(async () => {
+      const INBOX_PANEL_KEY = "bb-project-bots/inbox";
+      try {
+        const { preferences } = await bb.sdk.system.uiPreferences.list();
+        const orderEntry = preferences["sidebar.pluginPanelOrder"];
+        const visibleEntry = preferences["sidebar.visiblePluginPanels"];
+        const currentOrder = Array.isArray(orderEntry.value) ? orderEntry.value : [];
+        await bb.sdk.system.uiPreferences.set({
+          key: "sidebar.pluginPanelOrder",
+          value: [INBOX_PANEL_KEY, ...currentOrder.filter((id) => id !== INBOX_PANEL_KEY && id !== "inbox/inbox")],
+          expectedRevision: orderEntry.revision,
+        });
+        if (Array.isArray(visibleEntry.value)) {
+          const filtered = visibleEntry.value.filter((id) => id !== "inbox/inbox");
+          if (!filtered.includes(INBOX_PANEL_KEY)) {
+            await bb.sdk.system.uiPreferences.set({
+              key: "sidebar.visiblePluginPanels",
+              value: [INBOX_PANEL_KEY, ...filtered],
+              expectedRevision: visibleEntry.revision,
+            });
+          }
+        }
+      } catch (error) {
+        bb.log.warn(
+          `Could not pin Inbox to top of sidebar on install: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     });
   };
 }

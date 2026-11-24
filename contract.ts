@@ -98,6 +98,132 @@ export const pluginSettingsSchema = z.object({
 }).strict();
 export type PluginSettingsDto = z.infer<typeof pluginSettingsSchema>;
 
+// --- Decision Inbox & unified message({ text, to?, query? }) schemas ---
+
+export const optionSchema = z.object({
+  label: z
+    .string()
+    .min(1)
+    .describe("A few words; the reasoning goes in detail."),
+  key: z
+    .string()
+    .regex(/^[a-z]$/)
+    .optional()
+    .describe('Its letter, "a".'),
+  detail: z.string().optional(),
+  recommended: z.boolean().optional().describe("Your pick."),
+  preview: z
+    .string()
+    .optional()
+    .describe("Markdown shown beside the option."),
+});
+export type QuestionOption = z.infer<typeof optionSchema>;
+
+export const scaleSchema = z.object({
+  min: z.number().int(),
+  max: z.number().int(),
+  low: z.string().optional(),
+  high: z.string().optional(),
+});
+export type QuestionScale = z.infer<typeof scaleSchema>;
+
+export const questionKindSchema = z.enum([
+  "choice",
+  "multi",
+  "confirm",
+  "text",
+  "scale",
+]);
+export type QuestionKind = z.infer<typeof questionKindSchema>;
+
+export const questionSchema = z.object({
+  text: z.string().min(1),
+  kind: questionKindSchema,
+  ref: z
+    .string()
+    .regex(/^\d+$/)
+    .optional()
+    .describe('Its number, "2".'),
+  options: z.array(optionSchema).optional(),
+  scale: scaleSchema.optional(),
+  placeholder: z.string().optional(),
+});
+export type Question = z.infer<typeof questionSchema>;
+
+export const messageToolSchema = z.object({
+  text: z
+    .string()
+    .min(1)
+    .describe(
+      "Message body. With to='user' and query, Markdown is supported and the bold lead or first line is shown as the Inbox title. With to='user' and no query, skips Inbox (thread prose only).",
+    ),
+  to: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .describe(
+      'Recipient (default: "user"). Use "user" for the user, "parent" for the current thread\'s parent thread, a thread ID (e.g. "thr_..."), or a bot ID / project ID / exact bot name from list_bots.',
+    ),
+  query: z
+    .array(questionSchema)
+    .optional()
+    .describe(
+      'With to="user", the decisions the message asks, shown as an interactive answer card in the Inbox and inline in the thread: choice (one option), multi (any), confirm (yes/no), text (typed), scale (min–max with end labels). The card adds "Something else…" and a note field itself. Omit query for plain prose (skips Inbox).',
+    ),
+});
+export type MessageToolInput = z.infer<typeof messageToolSchema>;
+
+export const answerItemSchema = z.object({
+  question: z.string().min(1),
+  answer: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+});
+export type AnswerItem = z.infer<typeof answerItemSchema>;
+
+export const replyInputSchema = z.object({
+  answers: z.array(answerItemSchema).optional(),
+  note: z.string().optional(),
+  text: z.string().optional(),
+});
+export type ReplyInput = z.infer<typeof replyInputSchema>;
+
+export const botSummarySchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  role: z.string().default(""),
+  color: z.string().optional(),
+  kind: z.string().optional(),
+});
+export type BotSummary = z.infer<typeof botSummarySchema>;
+
+export const messageStateSchema = z.enum(["open", "answered", "dismissed"]);
+export type MessageState = z.infer<typeof messageStateSchema>;
+
+export const inboxMessageSchema = z.object({
+  id: z.number().int().positive(),
+  threadId: z.string().min(1),
+  turnId: z.string().nullable(),
+  text: z.string(),
+  query: z.array(questionSchema).optional(),
+  state: messageStateSchema,
+  answerText: z.string().nullable(),
+  createdAt: z.number(),
+  resolvedAt: z.number().nullable(),
+  bot: botSummarySchema.nullable(),
+  threadTitle: z.string().nullable(),
+  projectId: z.string().nullable(),
+  projectName: z.string().nullable(),
+});
+export type InboxMessage = z.infer<typeof inboxMessageSchema>;
+
+export const threadOpenCountSchema = z.object({
+  openCount: z.number().int().nonnegative(),
+  oldestAt: z.number().nullable(),
+});
+export type ThreadOpenCount = z.infer<typeof threadOpenCountSchema>;
+
+export const INBOX_REALTIME_CHANNEL = "inbox:changed";
+
 export const rpcContract = defineRpcContract({
   sidebar_state: {
     input: z.null(),
@@ -218,5 +344,57 @@ export const rpcContract = defineRpcContract({
   thread_bot_info: {
     input: z.object({ threadId: id }).strict(),
     output: threadBotInfoSchema,
+  },
+  inbox_list: {
+    input: z
+      .object({
+        includeResolvedToday: z.boolean().optional(),
+      })
+      .optional(),
+    output: z.object({
+      open: z.array(inboxMessageSchema),
+      resolvedToday: z.array(inboxMessageSchema),
+    }),
+  },
+  thread_messages: {
+    input: z.object({
+      threadId: z.string().min(1),
+    }),
+    output: z.object({
+      messages: z.array(inboxMessageSchema),
+    }),
+  },
+  get_message: {
+    input: z.object({
+      messageId: z.number().int().positive(),
+    }),
+    output: z.object({
+      message: inboxMessageSchema.nullable(),
+    }),
+  },
+  answer_message: {
+    input: z.object({
+      messageId: z.number().int().positive(),
+      answers: z.array(answerItemSchema).optional(),
+      note: z.string().optional(),
+      text: z.string().optional(),
+    }),
+    output: z.object({
+      message: inboxMessageSchema,
+    }),
+  },
+  dismiss_message: {
+    input: z.object({
+      messageId: z.number().int().positive(),
+    }),
+    output: z.object({
+      message: inboxMessageSchema,
+    }),
+  },
+  open_counts_by_thread: {
+    input: z.object({
+      keys: z.array(z.string().min(1)).max(200),
+    }),
+    output: z.record(z.string(), threadOpenCountSchema),
   },
 });

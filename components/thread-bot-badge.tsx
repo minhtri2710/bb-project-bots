@@ -4,7 +4,6 @@ import {
   useRealtimeConnectionState,
   useRpc,
   type ExperimentalThreadInfoProps,
-  type PluginThreadHeaderActionProps,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract, ThreadBotInfo } from "../contract";
 import { BotIcon } from "./bot-icon";
@@ -46,23 +45,6 @@ function useThreadBotInfo(threadId: string) {
   });
 
   return info;
-}
-
-export function ThreadBotHeaderBadge({ threadId }: PluginThreadHeaderActionProps) {
-  const info = useThreadBotInfo(threadId);
-  if (!info?.bot) return null;
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-muted/40 px-2 py-0.5 text-xs text-foreground"
-      title={`${info.bot.name} (${info.bot.kind === "unaffiliated" ? "Unaffiliated coordinator" : "Project bot"})\n${info.bot.filePath}`}
-    >
-      <BotIcon avatar={info.bot.avatar} size={15} />
-      <span className="max-w-[140px] truncate font-medium">{info.bot.name}</span>
-      {info.bot.kind === "unaffiliated" ? (
-        <span className="rounded bg-primary/15 px-1 text-[10px] text-primary">coord</span>
-      ) : null}
-    </span>
-  );
 }
 
 export function ThreadBotInfoSection({ threadId }: ExperimentalThreadInfoProps) {

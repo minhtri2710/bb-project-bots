@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   definePluginApp,
+  experimental_Icon as Icon,
   experimental_ThreadActionsContextMenu as ThreadActionsContextMenu,
+  experimental_useRpcKeyedQuery,
   experimental_useSidebarNavigation,
   experimental_useSidebarThreads,
   ThreadTitle,
@@ -10,15 +12,30 @@ import {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
+  type ExperimentalBadge,
+  type ExperimentalMessageMetadataProps,
+  type PluginMessageDirectiveProps,
   type PluginSidebarThread,
   type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
-import type { BotRecordDto, DreamConfigDto, DreamStateSummaryDto, PluginSettingsDto, rpcContract } from "./contract";
+import {
+  INBOX_REALTIME_CHANNEL,
+  rpcContract,
+  type BotRecordDto,
+  type DreamConfigDto,
+  type DreamStateSummaryDto,
+  type InboxMessage,
+  type PluginSettingsDto,
+  type ReplyInput,
+} from "./contract";
 import { BotEditorDialog, type BotEditorTarget } from "./components/bot-editor-dialog";
 import { DreamSettingsDialog } from "./components/dream-settings-dialog";
+import { InboxPage } from "./components/inbox-page";
+import { MessageCard } from "./components/inbox-message-card";
 import { SidebarBotIcon } from "./components/sidebar-bot-icon";
 import { SidebarConversationStatus } from "./components/sidebar-conversation-status";
-import { ThreadBotHeaderBadge, ThreadBotInfoSection } from "./components/thread-bot-badge";
+import { ThreadBotInfoSection } from "./components/thread-bot-badge";
+import { useInboxStore } from "./lib/inbox-store";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { Button } from "./components/ui/button";
 import { TooltipProvider } from "./components/ui/tooltip";
@@ -529,10 +546,12 @@ function BotGroupRow({
 function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
   const sidebar = experimental_useSidebarThreads();
   const sidebarNav = experimental_useSidebarNavigation();
+  const inboxStore = useInboxStore();
   const inboxNavItem = useMemo(
-    () => sidebarNav.items.find((item) => item.id === "inbox/inbox") ?? null,
+    () => sidebarNav.items.find((item) => item.id === "bb-project-bots/inbox") ?? null,
     [sidebarNav.items],
   );
+  const unresolvedInboxCount = inboxStore.open.length;
   const navigate = useBbNavigate();
   const {
     rpc,
@@ -833,22 +852,34 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
         <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
           <div className="flex min-w-0 items-center gap-1.5">
             <span className="truncate text-xs font-semibold tracking-wide text-foreground">Project Bots</span>
-            {inboxNavItem && (inboxNavItem.badge?.count ?? 0) > 0 ? (
+            {unresolvedInboxCount > 0 ? (
               <button
                 type="button"
-                aria-label={inboxNavItem.badge?.label ?? `${inboxNavItem.badge?.count} unresolved inbox items`}
-                title={inboxNavItem.badge?.label ?? "Unresolved inbox items"}
+                aria-label={
+                  unresolvedInboxCount === 1
+                    ? "1 question waiting in Inbox"
+                    : `${unresolvedInboxCount} questions waiting in Inbox`
+                }
+                title={
+                  unresolvedInboxCount === 1
+                    ? "1 question waiting in Inbox"
+                    : `${unresolvedInboxCount} questions waiting in Inbox`
+                }
                 onClick={(event) => {
-                  sidebarNav.actions.activate(inboxNavItem.id, {
-                    target: event.metaKey || event.ctrlKey ? "split" : "current",
-                  });
+                  if (inboxNavItem) {
+                    sidebarNav.actions.activate(inboxNavItem.id, {
+                      target: event.metaKey || event.ctrlKey ? "split" : "current",
+                    });
+                  } else {
+                    navigate.toPluginPanel("inbox");
+                  }
                   onNavigate();
                 }}
                 className="pb-inbox-badge-pulse inline-flex h-5 min-w-5 shrink-0 items-center justify-center gap-1 rounded-full border border-yellow-500 bg-yellow-400 px-1.5 font-mono text-[10px] font-semibold tabular-nums text-black transition-colors hover:bg-yellow-300"
               >
                 <span aria-hidden="true" className="size-1.5 rounded-full bg-black/80" />
                 <span>
-                  {(inboxNavItem.badge?.count ?? 0) > 99 ? "99+" : inboxNavItem.badge?.count}
+                  {unresolvedInboxCount > 99 ? "99+" : unresolvedInboxCount}
                 </span>
               </button>
             ) : null}
@@ -1056,11 +1087,199 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
   );
 }
 
+const directiveRenderedIds = new Set<number>();
+
+function useInboxBadge(): ExperimentalBadge | null {
+  const { open } = useInboxStore();
+  const openCount = open.length;
+  if (openCount <= 0) return null;
+  return {
+    count: openCount,
+    tone: "warning",
+    label:
+      openCount === 1
+        ? "1 question waiting in Inbox"
+        : `${openCount} questions waiting in Inbox`,
+  };
+}
+
+function InlineThreadMessages({ message }: ExperimentalMessageMetadataProps) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [messages, setMessages] = useState<InboxMessage[]>([]);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await rpc.call("thread_messages", {
+        threadId: message.threadId,
+      });
+      setMessages(data.messages);
+    } catch {
+      // Ignore transient errors
+    }
+  }, [message.threadId, rpc]);
+
+  useEffect(() => {
+    if (message.role !== "assistant") return;
+    void load();
+  }, [load, message.role]);
+
+  useRealtime(INBOX_REALTIME_CHANNEL, (payload) => {
+    if (message.role !== "assistant") return;
+    const p = payload as { threadId?: string } | null;
+    if (!p?.threadId || p.threadId === message.threadId) {
+      void load();
+    }
+  });
+
+  const matching = useMemo(() => {
+    if (message.role !== "assistant" || messages.length === 0) return [];
+    return messages.filter((item) => {
+      if (directiveRenderedIds.has(item.id)) return false;
+      if (message.turnId && item.turnId) {
+        return item.turnId === message.turnId;
+      }
+      const delta = message.createdAt - item.createdAt;
+      return delta >= -5_000 && delta <= 120_000;
+    });
+  }, [message.createdAt, message.role, message.turnId, messages]);
+
+  const handleAnswer = useCallback(
+    async (messageId: number, reply: ReplyInput) => {
+      await rpc.call("answer_message", { messageId, ...reply });
+      await load();
+    },
+    [load, rpc],
+  );
+
+  const handleDismiss = useCallback(
+    async (messageId: number) => {
+      await rpc.call("dismiss_message", { messageId });
+      await load();
+    },
+    [load, rpc],
+  );
+
+  if (matching.length === 0) return null;
+
+  return (
+    <div className="mb-2 space-y-2">
+      {matching.map((item) => (
+        <MessageCard
+          key={item.id}
+          message={item}
+          onAnswer={(reply) => handleAnswer(item.id, reply)}
+          onDismiss={() => handleDismiss(item.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function InboxMessageDirective({ attributes }: PluginMessageDirectiveProps) {
+  const rpc = useRpc<typeof rpcContract>();
+  const id = Number(attributes.id);
+  const validId = Number.isSafeInteger(id) && id > 0;
+  const [item, setItem] = useState<InboxMessage | null>(null);
+
+  useEffect(() => {
+    if (!validId) return;
+    directiveRenderedIds.add(id);
+    return () => {
+      directiveRenderedIds.delete(id);
+    };
+  }, [id, validId]);
+
+  const load = useCallback(async () => {
+    if (!validId) return;
+    try {
+      const data = await rpc.call("get_message", { messageId: id });
+      setItem(data.message);
+    } catch {
+      // Ignore transient errors
+    }
+  }, [id, rpc, validId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useRealtime(INBOX_REALTIME_CHANNEL, (payload) => {
+    const p = payload as { messageId?: number } | null;
+    if (!p?.messageId || p.messageId === id) {
+      void load();
+    }
+  });
+
+  if (!validId || !item) return null;
+
+  return (
+    <MessageCard
+      message={item}
+      onAnswer={async (reply) => {
+        await rpc.call("answer_message", { messageId: item.id, ...reply });
+        await load();
+      }}
+      onDismiss={async () => {
+        await rpc.call("dismiss_message", { messageId: item.id });
+        await load();
+      }}
+    />
+  );
+}
+
 export default definePluginApp((app) => {
-  app.slots.experimental_threadHeaderAction({
-    id: "project-bot-badge",
-    title: "Project Bot",
-    component: ThreadBotHeaderBadge,
+  app.slots.navPanel({
+    id: "inbox",
+    title: "Inbox",
+    icon: "Inbox",
+    path: "inbox",
+    component: InboxPage,
+    experimental_useBadge: useInboxBadge,
+  });
+  app.slots.experimental_messageMetadata({
+    id: "inline-inbox-cards",
+    placement: "above",
+    component: InlineThreadMessages,
+  });
+  app.slots.messageDirective({
+    id: "inbox-message",
+    component: InboxMessageDirective,
+  });
+  app.slots.experimental_threadRowMetadata({
+    id: "waits-on-you",
+    useData({ threads }) {
+      const keys = useMemo(() => threads.map((t) => t.id), [threads]);
+      const query = experimental_useRpcKeyedQuery({
+        contract: rpcContract,
+        method: "open_counts_by_thread",
+        keys,
+      });
+      return query.data ?? {};
+    },
+    component({ thread, data }) {
+      const info = data?.[thread.id];
+      if (!info || info.openCount <= 0) return null;
+      return (
+        <span
+          className="inline-flex items-center gap-1 font-mono text-[10px] text-amber-700 dark:text-amber-300"
+          title={
+            info.openCount === 1
+              ? "1 unanswered question in Inbox"
+              : `${info.openCount} unanswered questions in Inbox`
+          }
+        >
+          <Icon name="Inbox" className="size-3 shrink-0" />
+          <span>waits on you</span>
+        </span>
+      );
+    },
+  });
+  app.commands.register({
+    id: "open-inbox",
+    title: "Inbox: Open Inbox",
+    run() {
+      window.location.assign("/plugins/bb-project-bots/inbox");
+    },
   });
   app.slots.experimental_threadInfoSection({
     id: "project-bot-info",
