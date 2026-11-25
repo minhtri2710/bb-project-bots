@@ -89,7 +89,18 @@ function useSidebarState() {
     settledThreads: [],
     threadOrder: [],
     specialThreads: [],
-    settings: { autoSettle: true, autoSettleAfterHours: 72 },
+    settings: {
+      autoSettle: true,
+      autoSettleAfterHours: 72,
+      autoArchiveSettled: false,
+      autoArchiveSettledAfterDays: 7,
+      autoDeleteArchived: false,
+      autoDeleteArchivedAfterDays: 30,
+      autoSettleBots: false,
+      autoSettleBotsAfterHours: 168,
+      autoDeleteProjects: false,
+      autoDeleteProjectsAfterDays: 30,
+    },
     dreamConfig: { enabled: false, providerId: "", model: "", intervalMinutes: 60 },
     dreamThreadId: null,
     dreamStates: [],
@@ -808,7 +819,7 @@ function BotGroupRow({
                 <div className={activeRoots.length > 0 ? "mt-1" : ""}>
                   <button
                     type="button"
-                    className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-accent/40 hover:text-foreground"
+                    className="ml-[30px] flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:bg-accent/40 hover:text-foreground"
                     onClick={() => setShowSettledThreads((v) => !v)}
                   >
                     <span>{settledRoots.length} settled</span>
@@ -873,6 +884,7 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
   } = useSidebarState();
 
   const [expandedBots, setExpandedBots] = useState<Set<string>>(() => new Set());
+  const [showSettledBots, setShowSettledBots] = useState(false);
   const [chatsExpanded, setChatsExpanded] = useState(false);
   const [filterQuery, setFilterQuery] = useState("");
   const [editor, setEditor] = useState<BotEditorTarget | null>(null);
@@ -1059,6 +1071,55 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
       ),
     [projectBots, normalizedFilter, sortBotsPinnedThenRecent],
   );
+
+  const { activeProjects, settledProjects } = useMemo(() => {
+    if (!settings.autoSettleBots || normalizedFilter) {
+      return { activeProjects: sortedFilteredProjects, settledProjects: [] as BotRecordDto[] };
+    }
+    const cutoff = Date.now() - settings.autoSettleBotsAfterHours * 3_600_000;
+    const active: BotRecordDto[] = [];
+    const settled: BotRecordDto[] = [];
+    for (const bot of sortedFilteredProjects) {
+      const botThreads = threadsByBot.get(bot.id) ?? [];
+      const keepActive =
+        pinnedSet.has(bot.id) ||
+        botThreads.some(
+          (t) =>
+            t.id === activeThreadId ||
+            isThreadBusy(t) ||
+            t.isUnread ||
+            t.isPinned,
+        );
+      if (keepActive) {
+        active.push(bot);
+        continue;
+      }
+      const latestThreadAt = botThreads.reduce(
+        (max, t) => Math.max(max, t.updatedAt, t.latestAttentionAt),
+        0,
+      );
+      const latestAt = Math.max(
+        latestThreadAt,
+        lastUsedMap.get(bot.id) ?? 0,
+        bot.updatedAt,
+      );
+      if (latestAt > 0 && latestAt < cutoff) {
+        settled.push(bot);
+      } else {
+        active.push(bot);
+      }
+    }
+    return { activeProjects: active, settledProjects: settled };
+  }, [
+    sortedFilteredProjects,
+    settings.autoSettleBots,
+    settings.autoSettleBotsAfterHours,
+    normalizedFilter,
+    threadsByBot,
+    pinnedSet,
+    activeThreadId,
+    lastUsedMap,
+  ]);
 
   const handleTogglePin = (bot: BotRecordDto) => {
     const nextPinned = !pinnedSet.has(bot.id);
@@ -1311,69 +1372,145 @@ function ProjectBotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProp
             </div>
             {!loaded ? (
               <div className="px-2 py-1 text-[11px] text-muted-foreground">Loading projects…</div>
-            ) : sortedFilteredProjects.length === 0 ? (
+            ) : activeProjects.length === 0 && settledProjects.length === 0 ? (
               <div className="px-2 py-1 text-[11px] text-muted-foreground">
                 {normalizedFilter ? "No matching projects." : "No projects found."}
               </div>
             ) : (
-              sortedFilteredProjects.map((bot, idx) => (
-                <BotGroupRow
-                  key={bot.id}
-                  bot={bot}
-                  hostName={bot.projectHostId ? hostNameById.get(bot.projectHostId) : null}
-                  pinned={pinnedSet.has(bot.id)}
-                  idleVariant={idx % 3}
-                  threads={threadsByBot.get(bot.id) ?? []}
-                  expanded={expandedBots.has(bot.id)}
-                  onToggleExpand={() => toggleExpand(bot.id)}
-                  activeThreadId={activeThreadId}
-                  activeAncestors={activeAncestors}
-                  lastViewedThreadId={lastViewedMap.get(bot.id) ?? null}
-                  settledThreadMap={settledThreadMap}
-                  threadOrder={threadOrderMap.get(bot.id) ?? []}
-                  specialThreadMap={specialThreadMap}
-                  settings={settings}
-                  onToggleThreadSettle={handleToggleThreadSettle}
-                  onReorderThreads={(botId, ids) => {
-                    void rpc
-                      .call("thread_reorder", { botId, threadIds: ids })
-                      .then(() => refresh())
-                      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
-                  }}
-                  onPromoteSpecial={(thread) =>
-                    setSpecialDialog({
-                      mode: "promote",
-                      threadId: thread.id,
-                      botId: bot.id,
-                      botName: bot.name,
-                      currentTitle: thread.title ?? undefined,
-                      existing: specialThreadMap.get(thread.id) ?? null,
-                    })
-                  }
-                  onDemoteSpecial={(threadId) => {
-                    void rpc
-                      .call("special_thread_remove", { threadId })
-                      .then(() => {
-                        toast.success("Demoted from Special thread");
-                        void refresh();
+              <>
+                {activeProjects.map((bot, idx) => (
+                  <BotGroupRow
+                    key={bot.id}
+                    bot={bot}
+                    hostName={bot.projectHostId ? hostNameById.get(bot.projectHostId) : null}
+                    pinned={pinnedSet.has(bot.id)}
+                    idleVariant={idx % 3}
+                    threads={threadsByBot.get(bot.id) ?? []}
+                    expanded={expandedBots.has(bot.id)}
+                    onToggleExpand={() => toggleExpand(bot.id)}
+                    activeThreadId={activeThreadId}
+                    activeAncestors={activeAncestors}
+                    lastViewedThreadId={lastViewedMap.get(bot.id) ?? null}
+                    settledThreadMap={settledThreadMap}
+                    threadOrder={threadOrderMap.get(bot.id) ?? []}
+                    specialThreadMap={specialThreadMap}
+                    settings={settings}
+                    onToggleThreadSettle={handleToggleThreadSettle}
+                    onReorderThreads={(botId, ids) => {
+                      void rpc
+                        .call("thread_reorder", { botId, threadIds: ids })
+                        .then(() => refresh())
+                        .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
+                    }}
+                    onPromoteSpecial={(thread) =>
+                      setSpecialDialog({
+                        mode: "promote",
+                        threadId: thread.id,
+                        botId: bot.id,
+                        botName: bot.name,
+                        currentTitle: thread.title ?? undefined,
+                        existing: specialThreadMap.get(thread.id) ?? null,
                       })
-                      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
-                  }}
-                  onOpenBot={() => openBot(bot)}
-                  onNewChat={() => openNewChat(bot)}
-                  onNewSpecialThread={() =>
-                    setSpecialDialog({
-                      mode: "create",
-                      botId: bot.id,
-                      botName: bot.name,
-                    })
-                  }
-                  onTogglePin={() => handleTogglePin(bot)}
-                  onDreamNow={() => handleDreamNow(bot)}
-                  onEditBot={() => setEditor({ mode: "edit", bot })}
-                  onSelectThread={handleSelectThread}
-                />
-              ))
+                    }
+                    onDemoteSpecial={(threadId) => {
+                      void rpc
+                        .call("special_thread_remove", { threadId })
+                        .then(() => {
+                          toast.success("Demoted from Special thread");
+                          void refresh();
+                        })
+                        .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
+                    }}
+                    onOpenBot={() => openBot(bot)}
+                    onNewChat={() => openNewChat(bot)}
+                    onNewSpecialThread={() =>
+                      setSpecialDialog({
+                        mode: "create",
+                        botId: bot.id,
+                        botName: bot.name,
+                      })
+                    }
+                    onTogglePin={() => handleTogglePin(bot)}
+                    onDreamNow={() => handleDreamNow(bot)}
+                    onEditBot={() => setEditor({ mode: "edit", bot })}
+                    onSelectThread={handleSelectThread}
+                  />
+                ))}
+                {settledProjects.length > 0 ? (
+                  <div className="mt-1">
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-accent/40 hover:text-foreground"
+                      onClick={() => setShowSettledBots((v) => !v)}
+                    >
+                      <span>{settledProjects.length} settled</span>
+                      <span>{showSettledBots ? "▾" : "▸"}</span>
+                    </button>
+                    {showSettledBots ? (
+                      <div className="mt-0.5 opacity-80">
+                        {settledProjects.map((bot, idx) => (
+                          <BotGroupRow
+                            key={bot.id}
+                            bot={bot}
+                            hostName={bot.projectHostId ? hostNameById.get(bot.projectHostId) : null}
+                            pinned={pinnedSet.has(bot.id)}
+                            idleVariant={idx % 3}
+                            threads={threadsByBot.get(bot.id) ?? []}
+                            expanded={expandedBots.has(bot.id)}
+                            onToggleExpand={() => toggleExpand(bot.id)}
+                            activeThreadId={activeThreadId}
+                            activeAncestors={activeAncestors}
+                            lastViewedThreadId={lastViewedMap.get(bot.id) ?? null}
+                            settledThreadMap={settledThreadMap}
+                            threadOrder={threadOrderMap.get(bot.id) ?? []}
+                            specialThreadMap={specialThreadMap}
+                            settings={settings}
+                            onToggleThreadSettle={handleToggleThreadSettle}
+                            onReorderThreads={(botId, ids) => {
+                              void rpc
+                                .call("thread_reorder", { botId, threadIds: ids })
+                                .then(() => refresh())
+                                .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
+                            }}
+                            onPromoteSpecial={(thread) =>
+                              setSpecialDialog({
+                                mode: "promote",
+                                threadId: thread.id,
+                                botId: bot.id,
+                                botName: bot.name,
+                                currentTitle: thread.title ?? undefined,
+                                existing: specialThreadMap.get(thread.id) ?? null,
+                              })
+                            }
+                            onDemoteSpecial={(threadId) => {
+                              void rpc
+                                .call("special_thread_remove", { threadId })
+                                .then(() => {
+                                  toast.success("Demoted from Special thread");
+                                  void refresh();
+                                })
+                                .catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
+                            }}
+                            onOpenBot={() => openBot(bot)}
+                            onNewChat={() => openNewChat(bot)}
+                            onNewSpecialThread={() =>
+                              setSpecialDialog({
+                                mode: "create",
+                                botId: bot.id,
+                                botName: bot.name,
+                              })
+                            }
+                            onTogglePin={() => handleTogglePin(bot)}
+                            onDreamNow={() => handleDreamNow(bot)}
+                            onEditBot={() => setEditor({ mode: "edit", bot })}
+                            onSelectThread={handleSelectThread}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </>
             )}
           </div>
         </div>

@@ -95,6 +95,14 @@ export type ThreadBotInfo = z.infer<typeof threadBotInfoSchema>;
 export const pluginSettingsSchema = z.object({
   autoSettle: z.boolean(),
   autoSettleAfterHours: z.number().int().min(1).max(2160),
+  autoArchiveSettled: z.boolean(),
+  autoArchiveSettledAfterDays: z.number().int().min(0).max(365),
+  autoDeleteArchived: z.boolean(),
+  autoDeleteArchivedAfterDays: z.number().int().min(1).max(365),
+  autoSettleBots: z.boolean(),
+  autoSettleBotsAfterHours: z.number().int().min(1).max(8760),
+  autoDeleteProjects: z.boolean(),
+  autoDeleteProjectsAfterDays: z.number().int().min(1).max(365),
 }).strict();
 export type PluginSettingsDto = z.infer<typeof pluginSettingsSchema>;
 

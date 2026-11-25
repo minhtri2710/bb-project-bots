@@ -11,6 +11,7 @@ import { buildBotInstructions, MEMORY_TOOL_GUIDANCE } from "./lib/bot-instructio
 import { createBotStore, type BotRecord, type ProjectSummary } from "./lib/bot-store";
 import { DREAM_MARKER, runDreamForBot, runDreamSweep } from "./lib/dream-runner";
 import { createInboxService } from "./lib/inbox-server";
+import { runLifecycleSweep } from "./lib/lifecycle-sweep";
 import {
   findBotTarget,
   getPersonalProjectId,
@@ -52,6 +53,54 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
         description: "Hours of inactivity before a thread settles (1–2160). Default 72 (3 days).",
         default: 72,
       },
+      autoArchiveSettled: {
+        type: "boolean",
+        label: "Auto-archive settled threads",
+        description: "Automatically archive threads that have remained settled past the threshold below. Off by default.",
+        default: false,
+      },
+      autoArchiveSettledAfterDays: {
+        type: "number",
+        label: "Auto-archive settled threads after (days)",
+        description: "Days a thread stays settled before being archived (0–365; 0 = immediately). Default 7.",
+        default: 7,
+      },
+      autoDeleteArchived: {
+        type: "boolean",
+        label: "Auto-delete archived threads",
+        description: "Automatically delete archived threads older than the threshold below. Off by default.",
+        default: false,
+      },
+      autoDeleteArchivedAfterDays: {
+        type: "number",
+        label: "Auto-delete archived threads after (days)",
+        description: "Days after archiving before a thread is permanently deleted (1–365). Default 30.",
+        default: 30,
+      },
+      autoSettleBots: {
+        type: "boolean",
+        label: "Auto-settle idle project bots",
+        description: "Fold idle project bots behind a Settled toggle after the idle threshold below. Off by default.",
+        default: false,
+      },
+      autoSettleBotsAfterHours: {
+        type: "number",
+        label: "Auto-settle project bots after (hours idle)",
+        description: "Hours of inactivity before a project bot settles (1–8760). Default 168 (7 days).",
+        default: 168,
+      },
+      autoDeleteProjects: {
+        type: "boolean",
+        label: "Auto-delete idle projects with no active threads",
+        description: "Automatically remove BB projects with no active threads past the threshold below. Bot markdown files stay on disk and auto-reuse if the path returns. Off by default.",
+        default: false,
+      },
+      autoDeleteProjectsAfterDays: {
+        type: "number",
+        label: "Auto-delete empty projects after (days)",
+        description: "Days with no active threads before an idle project is deleted (1–365). Default 30.",
+        default: 30,
+      },
       dreamEnabled: {
         type: "boolean",
         label: "Enable automatic Dream Mode",
@@ -68,10 +117,20 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
 
     async function readPluginSettings() {
       const raw = await settingsHandle.get().catch(() => ({} as Record<string, unknown>));
-      const autoSettle = typeof raw.autoSettle === "boolean" ? raw.autoSettle : true;
-      const hoursRaw = typeof raw.autoSettleAfterHours === "number" ? raw.autoSettleAfterHours : 72;
-      const autoSettleAfterHours = Math.max(1, Math.min(2160, Math.round(hoursRaw)));
-      return { autoSettle, autoSettleAfterHours };
+      const clamp = (value: unknown, fallback: number, min: number, max: number) =>
+        Math.max(min, Math.min(max, Math.round(typeof value === "number" && Number.isFinite(value) ? value : fallback)));
+      return {
+        autoSettle: typeof raw.autoSettle === "boolean" ? raw.autoSettle : true,
+        autoSettleAfterHours: clamp(raw.autoSettleAfterHours, 72, 1, 2160),
+        autoArchiveSettled: typeof raw.autoArchiveSettled === "boolean" ? raw.autoArchiveSettled : false,
+        autoArchiveSettledAfterDays: clamp(raw.autoArchiveSettledAfterDays, 7, 0, 365),
+        autoDeleteArchived: typeof raw.autoDeleteArchived === "boolean" ? raw.autoDeleteArchived : false,
+        autoDeleteArchivedAfterDays: clamp(raw.autoDeleteArchivedAfterDays, 30, 1, 365),
+        autoSettleBots: typeof raw.autoSettleBots === "boolean" ? raw.autoSettleBots : false,
+        autoSettleBotsAfterHours: clamp(raw.autoSettleBotsAfterHours, 168, 1, 8760),
+        autoDeleteProjects: typeof raw.autoDeleteProjects === "boolean" ? raw.autoDeleteProjects : false,
+        autoDeleteProjectsAfterDays: clamp(raw.autoDeleteProjectsAfterDays, 30, 1, 365),
+      };
     }
 
     // Cache standard projects (including sources/paths) so synchronous agents.configure
@@ -342,6 +401,12 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
     // Automatic Dream Mode background schedule (checks every 15 minutes for bots due to dream)
     bb.background.schedule("dream-sweep", "*/15 * * * *", async () => {
       await runDreamSweep(bb, store, publish);
+    });
+
+    // Automatic lifecycle sweep (auto-archive settled threads, auto-delete archived threads, auto-delete empty projects)
+    bb.background.schedule("lifecycle-sweep", "*/15 * * * *", async () => {
+      const currentSettings = await readPluginSettings();
+      await runLifecycleSweep(bb, store, currentSettings, publish);
     });
 
     // CLI: bb project-bots list | message
