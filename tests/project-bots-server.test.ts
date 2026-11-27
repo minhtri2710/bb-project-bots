@@ -669,6 +669,40 @@ describe("bb-project-bots server", () => {
     expect(await toAlpha()).toBe(created.threadId);
   });
 
+  it("forgets a deleted thread's runtime state on thread.deleted", async () => {
+    const { alpha, threads, host } = await setup();
+    const alphaBotId = `projbot_${projectBotHash("/work/alpha")}`;
+    threads.set("thr_gone", makeThreadResponse({ id: "thr_gone", projectId: alpha.id }));
+    threads.set("thr_kept", makeThreadResponse({ id: "thr_kept", projectId: alpha.id }));
+    threads.set("thr_lander", makeThreadResponse({ id: "thr_lander", projectId: alpha.id }));
+    await host.harness.behavior.callRpc("conversation_viewed", { threadId: "thr_gone" });
+    await host.harness.behavior.callRpc("thread_settle_set", { threadId: "thr_gone", settled: true });
+    await host.harness.behavior.callRpc("thread_reorder", { botId: alphaBotId, threadIds: ["thr_gone", "thr_kept"] });
+    await host.harness.behavior.callRpc("special_thread_set", {
+      threadId: "thr_lander",
+      botId: alphaBotId,
+      name: "Lander",
+      icon: "merge",
+      instruction: "Land.",
+    });
+
+    for (const threadId of ["thr_gone", "thr_lander"]) {
+      const { errors } = await host.harness.behavior.emitThreadEvent("thread.deleted", { thread: threads.get(threadId)! });
+      expect(errors).toEqual([]);
+    }
+
+    const state = (await host.harness.behavior.callRpc("sidebar_state", null)) as {
+      lastViewed: Array<{ botId: string; threadId: string }>;
+      settledThreads: Array<{ threadId: string }>;
+      threadOrder: Array<{ botId: string; threadIds: string[] }>;
+      specialThreads: unknown[];
+    };
+    expect(state.lastViewed.find((v) => v.botId === alphaBotId)).toBeUndefined();
+    expect(state.settledThreads).toEqual([]);
+    expect(state.threadOrder.find((o) => o.botId === alphaBotId)?.threadIds).toEqual(["thr_kept"]);
+    expect(state.specialThreads).toEqual([]);
+  });
+
   it("dismiss_message lets an agent dismiss only Inbox questions its own thread asked", async () => {
     const { alpha, threads, host } = await setup();
     threads.set("thr_asker", makeThreadResponse({ id: "thr_asker", projectId: alpha.id }));

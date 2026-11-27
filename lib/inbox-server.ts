@@ -721,7 +721,9 @@ export function createInboxService(
             threadId: matchingSpecial.threadId,
           })) as { archivedAt?: number | null; deletedAt?: number | null } | null;
           if (!targetThread || targetThread.deletedAt != null || targetThread.archivedAt != null) {
-            store.removeSpecialThread(matchingSpecial.threadId);
+            // A deleted thread (e.g. while the plugin was down) leaves more than its Special record behind.
+            if (!targetThread || targetThread.deletedAt != null) store.forgetState({ threadIds: [matchingSpecial.threadId] });
+            else store.removeSpecialThread(matchingSpecial.threadId);
             publishSidebar();
             return errorResult(
               `Special thread "${matchingSpecial.name}" (${matchingSpecial.threadId}) is archived or deleted and has been demoted.`,
@@ -730,7 +732,7 @@ export function createInboxService(
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
           if (/not\s*found|404/i.test(msg)) {
-            store.removeSpecialThread(matchingSpecial.threadId);
+            store.forgetState({ threadIds: [matchingSpecial.threadId] });
             publishSidebar();
             return errorResult(
               `Special thread "${matchingSpecial.name}" (${matchingSpecial.threadId}) no longer exists and has been demoted.`,

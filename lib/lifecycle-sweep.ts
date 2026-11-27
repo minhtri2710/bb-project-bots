@@ -211,6 +211,7 @@ export async function runLifecycleSweep(
       }
     }
 
+    const botIdByProject = new Map(projects.map((p) => [p.id, store.readProjectBot(p).id]));
     const lastArchivedByProject = new Map<string, number>();
     for (const t of archivedThreads) {
       if (t.deletedAt != null) continue;
@@ -223,13 +224,13 @@ export async function runLifecycleSweep(
 
     for (const project of projects) {
       if (activeByProject.has(project.id)) continue;
-      const bot = store.readProjectBot(project);
-      if (pinnedBots.has(bot.id)) continue;
+      const botId = botIdByProject.get(project.id)!;
+      if (pinnedBots.has(botId)) continue;
       const projMeta = project as { createdAt?: number; updatedAt?: number };
       const latestActivity = Math.max(
         projMeta.updatedAt ?? 0,
         projMeta.createdAt ?? 0,
-        lastUsedMap.get(bot.id) ?? 0,
+        lastUsedMap.get(botId) ?? 0,
         lastArchivedByProject.get(project.id) ?? 0,
       );
       if (latestActivity <= 0 || latestActivity > projectCutoff) continue;
@@ -240,6 +241,22 @@ export async function runLifecycleSweep(
       } catch (error) {
         bb.log.warn(
           `lifecycle-sweep: failed to delete idle project ${project.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        continue;
+      }
+      // BB has no project.deleted event, so the sweep forgets what the deleted project owned. Its bot's
+      // markdown file stays for reuse; its bot state stays if another project shares the same source path.
+      const botShared = projects.some(
+        (other) => !summary.deletedProjects.includes(other.id) && botIdByProject.get(other.id) === botId,
+      );
+      try {
+        store.forgetState({
+          botIds: botShared ? [] : [botId],
+          threadIds: [...activeThreads, ...archivedThreads].filter((t) => t.projectId === project.id).map((t) => t.id),
+        });
+      } catch (error) {
+        bb.log.warn(
+          `lifecycle-sweep: deleted project ${project.id} but failed to forget its state: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }

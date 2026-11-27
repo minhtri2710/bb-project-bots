@@ -509,6 +509,11 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
       }
     });
 
+    // Every deletion path (lifecycle sweep, user, cascaded children) drops the thread's runtime state here.
+    bb.events.on("thread.deleted", ({ thread }) => {
+      if (store.forgetState({ threadIds: [thread.id] })) publish();
+    });
+
     bb.events.on("thread.archived", ({ thread }) => {
       if (store.removeSpecialThread(thread.id)) {
         publish();

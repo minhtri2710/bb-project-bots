@@ -468,35 +468,48 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
     if (existsSync(dir)) {
       rmSync(dir, { recursive: true, force: true });
     }
+    forgetState({ botIds: [botId] });
+  }
+
+  // Drops runtime state of deleted bots and deleted threads in one state write. Bot markdown files are untouched.
+  function forgetState(gone: { botIds?: readonly string[]; threadIds?: readonly string[] }): boolean {
+    const bots = new Set(gone.botIds ?? []);
+    const threads = new Set(gone.threadIds ?? []);
+    for (const threadId of threads) dreamSessions.delete(threadId);
+    if (bots.size === 0 && threads.size === 0) return false;
     const state = loadState();
-    let changed = false;
-    for (const [threadId, boundBotId] of Object.entries(state.threadBindings)) {
-      if (boundBotId === botId) {
-        delete state.threadBindings[threadId];
-        changed = true;
+    const before = JSON.stringify(state);
+    for (const [threadId, botId] of Object.entries(state.threadBindings)) {
+      if (bots.has(botId) || threads.has(threadId)) delete state.threadBindings[threadId];
+    }
+    for (const [threadId, special] of Object.entries(state.specialThreads)) {
+      if (bots.has(special.botId) || threads.has(threadId)) delete state.specialThreads[threadId];
+    }
+    for (const threadId of threads) delete state.settledThreads[threadId];
+    for (const map of [state.lastViewed, state.routingThreads]) {
+      for (const [botId, threadId] of Object.entries(map)) {
+        if (bots.has(botId) || threads.has(threadId)) delete map[botId];
       }
     }
-    if (state.lastViewed[botId]) {
-      delete state.lastViewed[botId];
-      changed = true;
+    for (const [botId, threadIds] of Object.entries(state.threadOrder)) {
+      const kept = bots.has(botId) ? [] : threadIds.filter((id) => !threads.has(id));
+      if (kept.length > 0) state.threadOrder[botId] = kept;
+      else delete state.threadOrder[botId];
     }
-    if (state.routingThreads[botId]) {
-      delete state.routingThreads[botId];
-      changed = true;
+    for (const [botId, dream] of Object.entries(state.dreamState)) {
+      if (bots.has(botId)) {
+        delete state.dreamState[botId];
+        continue;
+      }
+      for (const threadId of threads) delete dream.processedThreadSeq?.[threadId];
     }
-    if (state.lastUsedAt[botId]) {
-      delete state.lastUsedAt[botId];
-      changed = true;
-    }
-    if (state.pinnedBotIds.includes(botId)) {
-      state.pinnedBotIds = state.pinnedBotIds.filter((id) => id !== botId);
-      changed = true;
-    }
-    if (state.dreamState[botId]) {
-      delete state.dreamState[botId];
-      changed = true;
-    }
-    if (changed) saveState(state);
+    for (const botId of bots) delete state.lastUsedAt[botId];
+    state.pinnedBotIds = state.pinnedBotIds.filter((id) => !bots.has(id));
+    state.settledBotIds = state.settledBotIds.filter((id) => !bots.has(id));
+    if (state.dreamThreadId && threads.has(state.dreamThreadId)) state.dreamThreadId = null;
+    if (JSON.stringify(state) === before) return false;
+    saveState(state);
+    return true;
   }
 
   function updateBotMemory(
@@ -851,6 +864,7 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
     createUnaffiliatedBot,
     updateUnaffiliatedBot,
     deleteUnaffiliatedBot,
+    forgetState,
     updateBotMemory,
     bindThread,
     threadBinding,

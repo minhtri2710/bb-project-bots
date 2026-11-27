@@ -156,4 +156,79 @@ describe("runLifecycleSweep", () => {
     // Bot markdown file stays intact so it auto-reuses if the path is re-added!
     expect(existsSync(emptyBot.filePath)).toBe(true);
   });
+
+  it("forgets the runtime state a deleted project owned, unless another project shares its bot", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "pb-life-"));
+    const store = createBotStore(rootDir);
+    const now = 1_800_000_000_000;
+    const project = (id: string, path: string) => ({
+      id,
+      name: id,
+      kind: "standard",
+      createdAt: now - 60 * DAY_MS,
+      updatedAt: now - 45 * DAY_MS,
+      sources: [{ id: `src_${id}`, hostId: "h1", path, isDefault: true }],
+    });
+    const projEmpty = project("proj_empty", "/work/old-empty");
+    const projActive = project("proj_active", "/work/still-active");
+    // Same source path as projActive, so it shares projActive's bot
+    const projTwin = project("proj_twin", "/work/still-active");
+    type ProjectArg = Parameters<typeof store.ensureProjectBot>[0];
+    const { bot: emptyBot } = store.ensureProjectBot(projEmpty as ProjectArg);
+    const { bot: activeBot } = store.ensureProjectBot(projActive as ProjectArg);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(now - 40 * DAY_MS);
+    try {
+      store.rememberViewed(emptyBot.id, "thr_empty_work");
+      store.setSettled(emptyBot.id, true);
+      store.setThreadOrder(emptyBot.id, ["thr_empty_work"]);
+      store.setSpecialThread({ threadId: "thr_empty_special", botId: emptyBot.id, name: "Lander", icon: "merge", instruction: "Land." });
+      store.updateDreamState(emptyBot.id, { lastDreamAt: now - 41 * DAY_MS, processedThreadSeq: { thr_empty_work: 3 } });
+      store.setThreadSettled("thr_empty_hidden", true);
+      store.setSpecialThread({ threadId: "thr_twin_special", botId: activeBot.id, name: "Reviewer", icon: "shield", instruction: "Review." });
+      store.setSpecialThread({ threadId: "thr_live", botId: activeBot.id, name: "Lander", icon: "merge", instruction: "Land." });
+      store.rememberViewed(activeBot.id, "thr_live_work");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const { bb } = makeFakeBb({
+      activeThreads: [
+        { id: "thr_live", projectId: "proj_active", status: "idle", updatedAt: now - HOUR_MS, archivedAt: null, deletedAt: null },
+        { id: "thr_empty_hidden", projectId: "proj_empty", status: "idle", visibility: "hidden", updatedAt: now - 50 * DAY_MS, archivedAt: null, deletedAt: null },
+      ],
+      archivedThreads: [
+        { id: "thr_empty_work", projectId: "proj_empty", status: "idle", updatedAt: now - 50 * DAY_MS, archivedAt: now - 40 * DAY_MS, deletedAt: null },
+        { id: "thr_twin_special", projectId: "proj_twin", status: "idle", updatedAt: now - 50 * DAY_MS, archivedAt: now - 40 * DAY_MS, deletedAt: null },
+      ],
+      projects: [projEmpty, projActive, projTwin],
+    });
+
+    const summary = await runLifecycleSweep(
+      bb,
+      store,
+      { ...BASE_SETTINGS, autoDeleteProjects: true },
+      () => {},
+      now,
+    );
+    expect(summary.deletedProjects).toEqual(["proj_empty", "proj_twin"]);
+
+    // The deleted project's own bot keeps its markdown file but no runtime state
+    expect(existsSync(emptyBot.filePath)).toBe(true);
+    expect(store.allLastViewed().map((v) => v.botId)).not.toContain(emptyBot.id);
+    expect(store.routingThreadId(emptyBot.id)).toBeNull();
+    expect(store.allLastUsedAt().map((u) => u.botId)).not.toContain(emptyBot.id);
+    expect(store.settledBotIds()).not.toContain(emptyBot.id);
+    expect(store.threadOrderForBot(emptyBot.id)).toEqual([]);
+    expect(store.listSpecialThreadsForBot(emptyBot.id)).toEqual([]);
+    expect(store.allDreamStates().map((d) => d.botId)).not.toContain(emptyBot.id);
+    // ...including hidden, non-archived threads deleted with the project
+    expect(store.allSettledThreads()).toEqual([]);
+
+    // proj_twin shares a bot with the surviving proj_active: only proj_twin's threads go
+    expect(store.listSpecialThreadsForBot(activeBot.id).map((t) => t.threadId)).toEqual(["thr_live"]);
+    expect(store.routingThreadId(activeBot.id)).toBe("thr_live_work");
+    expect(store.allLastUsedAt().map((u) => u.botId)).toContain(activeBot.id);
+  });
 });
