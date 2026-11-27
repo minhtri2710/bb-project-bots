@@ -135,6 +135,7 @@ Settled threads collect behind a small *N settled ▸* toggle under each bot.
 | Tool | Purpose |
 |---|---|
 | `message` | User prose, Inbox decisions, and bot or thread messaging |
+| `dismiss_message` | Withdraw an open Inbox question the calling thread asked |
 | `update_memory_state` | Read and edit the bot's memory |
 | `list_bots` | Discover project bots and coordinator bots |
 | `inspect_bot` | See another bot's recent threads, turns and queued messages |

@@ -2,6 +2,7 @@ import type { BbPluginApi, PluginAgentToolResult } from "@get-bb/plugin-sdk";
 import {
   INBOX_REALTIME_CHANNEL,
   type BotSummary,
+  type DismissMessageToolInput,
   type InboxMessage,
   type MessageToolInput,
   type Question,
@@ -418,7 +419,7 @@ export function createInboxService(
       const msg = rowToMessage(row);
       return `- message #${msg.id}: ${gist(msg)} (asked ${formatAgo(msg.createdAt, now, { ago: true })})`;
     });
-    return `Open Inbox questions to the user in this thread (unanswered until they answer or dismiss them):\n${lines.join("\n")}`;
+    return `Open Inbox questions to the user in this thread (unanswered until they answer or dismiss them; call \`dismiss_message({ messageId })\` when one no longer needs an answer):\n${lines.join("\n")}`;
   }
 
   async function answerMessage(
@@ -466,10 +467,14 @@ export function createInboxService(
     return updated;
   }
 
-  function dismissMessage(messageId: number): InboxMessage {
+  // ownerThreadId restricts dismissal to questions asked by that thread (agent callers).
+  function dismissMessage(messageId: number, ownerThreadId?: string): InboxMessage {
     const now = Date.now();
     const tx = db.transaction(() => {
       const existing = getByIdStmt.get(messageId) as DbRow | undefined;
+      if (existing && ownerThreadId !== undefined && existing.thread_id !== ownerThreadId) {
+        throw new Error(`Message #${messageId} was not asked by this thread; only its own thread can dismiss it.`);
+      }
       if (!existing || existing.state !== "open") {
         throw new Error(NOT_OPEN);
       }
@@ -490,6 +495,18 @@ export function createInboxService(
     });
 
     return updated;
+  }
+
+  function executeDismissTool(
+    input: DismissMessageToolInput,
+    ctx: { threadId: string },
+  ): string | PluginAgentToolResult {
+    try {
+      const dismissed = dismissMessage(input.messageId, ctx.threadId);
+      return JSON.stringify({ id: dismissed.id, state: dismissed.state });
+    } catch (error) {
+      return errorResult(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function executeMessageTool(
@@ -783,6 +800,7 @@ export function createInboxService(
     openQuestionsInstruction,
     answerMessage,
     dismissMessage,
+    executeDismissTool,
     executeMessageTool,
   };
 }

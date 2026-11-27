@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
 import {
+  dismissMessageToolSchema,
   inspectBotToolSchema,
   listBotsToolSchema,
   memoryToolSchema,
@@ -170,7 +171,7 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
 
     function configForBot(bot: BotRecord, currentThreadId?: string) {
       return {
-        tools: ["update_memory_state", "list_bots", "inspect_bot", "message"],
+        tools: ["update_memory_state", "list_bots", "inspect_bot", "message", "dismiss_message"],
         skills: ["project-bots", "inbox"],
         instructions: buildBotInstructions(bot, {
           currentThreadId,
@@ -217,7 +218,7 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
         if (created) publish();
         return configForBot(bot, ctx.thread.id);
       }
-      return { tools: ["message"], skills: ["inbox"] };
+      return { tools: ["message", "dismiss_message"], skills: ["inbox"] };
     });
 
     bb.agents.contributeInstructions(({ threadId }) =>
@@ -240,6 +241,21 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
       },
       parameters: messageToolSchema,
       execute: (input, ctx) => inbox.executeMessageTool(input, ctx),
+    });
+
+    bb.agents.registerTool({
+      name: "dismiss_message",
+      description:
+        "Dismiss an open Inbox question that this thread asked, when it no longer needs the user's answer (e.g. you resolved it yourself or the plan changed). Only questions asked by the calling thread can be dismissed.",
+      presentation: {
+        label: {
+          pending: "Dismissing Inbox question",
+          completed: "Dismissed Inbox question",
+        },
+        icon: { glyph: "Inbox" },
+      },
+      parameters: dismissMessageToolSchema,
+      execute: (input, ctx) => inbox.executeDismissTool(input, ctx),
     });
 
     // 1. update_memory_state: manages the bot's markdown file directly

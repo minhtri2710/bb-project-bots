@@ -628,6 +628,61 @@ describe("bb-project-bots server", () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
+  it("dismiss_message lets an agent dismiss only Inbox questions its own thread asked", async () => {
+    const { alpha, threads, host } = await setup();
+    threads.set("thr_asker", makeThreadResponse({ id: "thr_asker", projectId: alpha.id }));
+    threads.set("thr_other", makeThreadResponse({ id: "thr_other", projectId: alpha.id }));
+    host.harness.sdk.stub("threads.timeline", async () => ({ items: [] }) as never);
+
+    const cfg = await host.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({
+        thread: { id: "thr_asker" },
+        project: { id: alpha.id, kind: "standard", name: alpha.name },
+      }),
+    );
+    expect(cfg.tools.map((tool) => tool.name)).toContain("dismiss_message");
+
+    const asked = JSON.parse(
+      String(
+        await host.harness.behavior.callAgentTool(
+          "message",
+          { text: "**Ship it?**", query: [{ text: "Ship now?", kind: "confirm" }] },
+          { threadId: "thr_asker", projectId: alpha.id },
+        ),
+      ),
+    ) as { id: number; mode: string };
+    expect(asked.mode).toBe("inbox");
+
+    const foreign = await host.harness.behavior.callAgentTool(
+      "dismiss_message",
+      { messageId: asked.id },
+      { threadId: "thr_other", projectId: alpha.id },
+    );
+    expect(JSON.stringify(foreign)).toContain("only its own thread can dismiss it");
+    const stillOpen = (await host.harness.behavior.callRpc("get_message", { messageId: asked.id })) as {
+      message: { state: string };
+    };
+    expect(stillOpen.message.state).toBe("open");
+
+    const own = JSON.parse(
+      String(
+        await host.harness.behavior.callAgentTool(
+          "dismiss_message",
+          { messageId: asked.id },
+          { threadId: "thr_asker", projectId: alpha.id },
+        ),
+      ),
+    ) as { id: number; state: string };
+    expect(own).toEqual({ id: asked.id, state: "dismissed" });
+
+    const again = await host.harness.behavior.callAgentTool(
+      "dismiss_message",
+      { messageId: asked.id },
+      { threadId: "thr_asker", projectId: alpha.id },
+    );
+    expect(JSON.stringify(again)).toContain("no longer open");
+  });
+
   it("ignores malformed specialThreads and threadOrder entries in .state.json", async () => {
     const { rootDir, host } = await setup();
     const { writeFileSync } = await import("node:fs");

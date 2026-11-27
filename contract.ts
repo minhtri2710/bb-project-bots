@@ -207,6 +207,15 @@ export const messageToolSchema = z.object({
 });
 export type MessageToolInput = z.infer<typeof messageToolSchema>;
 
+export const dismissMessageToolSchema = z.object({
+  messageId: z
+    .number()
+    .int()
+    .positive()
+    .describe("ID of an open Inbox question this thread asked (the `id` returned by `message`, also listed as message #N in your instructions)."),
+}).strict();
+export type DismissMessageToolInput = z.infer<typeof dismissMessageToolSchema>;
+
 export const answerItemSchema = z.object({
   question: z.string().min(1),
   answer: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
