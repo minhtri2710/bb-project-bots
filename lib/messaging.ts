@@ -402,8 +402,7 @@ export async function sendBotMessage(
       projectId: resolvedTarget.project.id,
       environment: { type: "project-default" },
       input: [{ type: "text", text: framed, mentions: [] }],
-      startedOnBehalfOf: params.senderThreadId ? { threadId: params.senderThreadId } : undefined,
-    } as Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0]);
+    });
     store.rememberViewed(targetBot.id, spawned.id);
     publish();
     return { botId: targetBot.id, botName: targetBot.name, threadId: spawned.id, spawned: true };
@@ -424,8 +423,7 @@ export async function sendBotMessage(
         visibility: "agent-only",
       },
     ],
-    startedOnBehalfOf: params.senderThreadId ? { threadId: params.senderThreadId } : undefined,
-  } as Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0]);
+  });
   store.bindThread(spawned.id, targetBot.id);
   store.consumeStart(token);
   store.rememberViewed(targetBot.id, spawned.id);

@@ -256,7 +256,29 @@ describe("bb-project-bots server", () => {
     expect(msgRes.spawned).toBe(true);
     expect(msgRes.botName).toBe("Alpha App");
     expect(spawnMock).toHaveBeenCalledTimes(2); // 1 for Chief's thread + 1 auto-spawned for Alpha
+    expect(spawnMock.mock.calls[1]![0]).toMatchObject({ projectId: "proj_alpha" });
+    expect(spawnMock.mock.calls[1]![0]).not.toHaveProperty("startedOnBehalfOf");
     expect(existsSync(join(rootDir, `${projectBotHash("/work/alpha")}.md`))).toBe(true);
+
+    // Messaging an unaffiliated bot with no thread auto-spawns a personal thread on Chief's behalf
+    const scout = (await host.harness.behavior.callRpc("bot_create_unaffiliated", {
+      name: "Scout",
+      role: "Researcher",
+      avatar: { color: "#6d5efc", shape: "blob", expression: "curious", motion: "calm" },
+    })) as BotRecordDto;
+    const scoutRes = JSON.parse(
+      String(
+        await host.harness.behavior.callAgentTool(
+          "message",
+          { to: scout.id, text: "Research release risks." },
+          { threadId: created.threadId, projectId: personal.id },
+        ),
+      ),
+    ) as { botId: string; spawned: boolean };
+    expect(scoutRes).toMatchObject({ botId: scout.id, spawned: true });
+    expect(spawnMock).toHaveBeenCalledTimes(3);
+    expect(spawnMock.mock.calls[2]![0]).toMatchObject({ projectId: personal.id });
+    expect(spawnMock.mock.calls[2]![0]).not.toHaveProperty("startedOnBehalfOf");
   });
 
   it("supports bb project-bots list CLI", async () => {

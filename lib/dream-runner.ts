@@ -248,7 +248,7 @@ export async function runDreamForBot(
               visibility: "agent-only",
             },
           ],
-        } as Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0]);
+        });
 
         dreamThreadId = spawned.id;
         store.setDreamThreadId(dreamThreadId);
