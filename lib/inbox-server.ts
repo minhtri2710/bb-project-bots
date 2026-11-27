@@ -635,14 +635,6 @@ export function createInboxService(
         return errorResult("Cannot send a message to your own thread.");
       }
       const senderBot = await resolveBotSummary(ctx.threadId);
-      const targetSpecial = store.getSpecialThread(to);
-      if (targetSpecial) {
-        if (!senderBot || senderBot.kind !== "project" || senderBot.id !== targetSpecial.botId) {
-          return errorResult(
-            `Special thread "${targetSpecial.name}" (${targetSpecial.threadId}) is project-specific and cannot be messaged from another project.`,
-          );
-        }
-      }
       try {
         const targetThread = (await bb.sdk.threads.get({ threadId: to })) as {
           archivedAt?: number | null;
@@ -774,7 +766,7 @@ export function createInboxService(
         .find((s) => s.name.toLowerCase() === needle && s.botId !== senderBot?.id);
       if (otherProjectSpecial) {
         return errorResult(
-          `Special thread "${otherProjectSpecial.name}" belongs to another project and cannot be messaged across projects.`,
+          `Special thread "${otherProjectSpecial.name}" belongs to another project; names only resolve within your own project. Use its thread ID: message({ to: "${otherProjectSpecial.threadId}", text }).`,
         );
       }
       return errorResult(

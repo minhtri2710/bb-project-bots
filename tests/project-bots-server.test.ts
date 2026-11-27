@@ -592,6 +592,42 @@ describe("bb-project-bots server", () => {
     expect(JSON.stringify(ambiguous)).toContain("ambiguous");
   });
 
+  it("routes message({ to: botId }) to a non-Special thread, spawning one when only Special threads exist", async () => {
+    const { alpha, beta, threads, host, sendMock, spawnMock } = await setup();
+    const alphaBotId = `projbot_${projectBotHash("/work/alpha")}`;
+    threads.set("thr_main", makeThreadResponse({ id: "thr_main", projectId: alpha.id, updatedAt: 10 }));
+    threads.set("thr_lander", makeThreadResponse({ id: "thr_lander", projectId: alpha.id, updatedAt: 20 }));
+    threads.set("thr_beta", makeThreadResponse({ id: "thr_beta", projectId: beta.id }));
+    await host.harness.behavior.callRpc("special_thread_set", {
+      threadId: "thr_lander",
+      botId: alphaBotId,
+      name: "Lander",
+      icon: "merge",
+      instruction: "Message Lander to merge.",
+    });
+    // Lander is both the newest and the last-viewed thread of the bot
+    await host.harness.behavior.callRpc("conversation_viewed", { threadId: "thr_lander" });
+
+    const listed = JSON.parse(String(await host.harness.behavior.callAgentTool("list_bots", {}, { threadId: "thr_beta", projectId: beta.id }))) as {
+      bots: Array<{ id: string; defaultThreadId: string | null }>;
+    };
+    expect(listed.bots.find((b) => b.id === alphaBotId)?.defaultThreadId).toBe("thr_main");
+
+    const toBot = JSON.parse(
+      String(await host.harness.behavior.callAgentTool("message", { to: alphaBotId, text: "Status?" }, { threadId: "thr_beta", projectId: beta.id })),
+    ) as { threadId: string; spawned: boolean };
+    expect(toBot).toMatchObject({ threadId: "thr_main", spawned: false });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+
+    threads.set("thr_main", makeThreadResponse({ id: "thr_main", projectId: alpha.id, archivedAt: 30 }));
+    const spawnedRes = JSON.parse(
+      String(await host.harness.behavior.callAgentTool("message", { to: alphaBotId, text: "Status?" }, { threadId: "thr_beta", projectId: beta.id })),
+    ) as { threadId: string; spawned: boolean };
+    expect(spawnedRes.spawned).toBe(true);
+    expect(spawnedRes.threadId).not.toBe("thr_lander");
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
   it("ignores malformed specialThreads and threadOrder entries in .state.json", async () => {
     const { rootDir, host } = await setup();
     const { writeFileSync } = await import("node:fs");
@@ -622,7 +658,7 @@ describe("bb-project-bots server", () => {
     expect(state.threadOrder).toEqual([{ botId: "bot_ok", threadIds: ["thr_1"] }]);
   });
 
-  it("creates Special threads directly on project bots and blocks cross-project messaging & @-mentions", async () => {
+  it("creates Special threads directly on project bots; cross-project delivery needs the exact thread ID", async () => {
     const { alpha, beta, threads, host, sendMock } = await setup();
     const alphaBotId = `projbot_${projectBotHash("/work/alpha")}`;
     threads.set("thr_alpha_worker", makeThreadResponse({ id: "thr_alpha_worker", projectId: alpha.id }));
@@ -655,15 +691,6 @@ describe("bb-project-bots server", () => {
       }),
     ).rejects.toThrow(/project-specific/);
 
-    // Cross-project message by threadId is rejected
-    const crossById = await host.harness.behavior.callAgentTool(
-      "message",
-      { to: created.threadId, text: "Review beta UI" },
-      { threadId: "thr_beta_worker", projectId: beta.id },
-    );
-    expect(JSON.stringify(crossById)).toContain("project-specific");
-    expect(sendMock).not.toHaveBeenCalled();
-
     // Cross-project message by Special thread name is rejected
     const crossByName = await host.harness.behavior.callAgentTool(
       "message",
@@ -672,6 +699,20 @@ describe("bb-project-bots server", () => {
     );
     expect(JSON.stringify(crossByName)).toContain("another project");
     expect(sendMock).not.toHaveBeenCalled();
+
+    // Cross-project message by exact threadId is delivered: the sender named the thread explicitly
+    const crossById = JSON.parse(
+      String(
+        await host.harness.behavior.callAgentTool(
+          "message",
+          { to: created.threadId, text: "Review beta UI" },
+          { threadId: "thr_beta_worker", projectId: beta.id },
+        ),
+      ),
+    ) as { delivered: boolean; threadId: string };
+    expect(crossById).toEqual({ to: created.threadId, threadId: created.threadId, delivered: true });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    sendMock.mockClear();
 
     // Same-project message by threadId succeeds
     const sameProject = JSON.parse(

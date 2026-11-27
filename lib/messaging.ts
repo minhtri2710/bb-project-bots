@@ -146,6 +146,7 @@ export async function listAllBots(bb: BbPluginApi, store: BotStore): Promise<Lis
     queuedCountByThread.set(msg.threadId, (queuedCountByThread.get(msg.threadId) ?? 0) + 1);
   }
 
+  const specialThreadIds = new Set(store.allSpecialThreads().map((s) => s.threadId));
   const visibleThreads = threads.filter((t) => t.archivedAt === null && t.deletedAt === null && t.visibility !== "hidden");
   const unaffiliated = store.listUnaffiliatedBots();
   const projectBots = projects.map((project) => ({ project, bot: store.readProjectBot(project) }));
@@ -169,10 +170,12 @@ export async function listAllBots(bb: BbPluginApi, store: BotStore): Promise<Lis
 
   const summarize = (bot: BotRecord): ListedBot => {
     const botThreads = (threadsByBot.get(bot.id) ?? []).sort((a, b) => b.updatedAt - a.updatedAt);
+    // Special threads serve a named role; routing by bot never lands in one.
+    const routable = botThreads.filter((t) => !specialThreadIds.has(t.id));
     const remembered = store.lastViewedThreadId(bot.id);
     const defaultThreadId =
-      (remembered && botThreads.some((t) => t.id === remembered) ? remembered : null) ??
-      botThreads[0]?.id ??
+      (remembered && routable.some((t) => t.id === remembered) ? remembered : null) ??
+      routable[0]?.id ??
       null;
     const status: ListedBot["status"] = botThreads.some((t) => t.status === "active" || t.status === "starting")
       ? "working"

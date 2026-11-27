@@ -37,8 +37,9 @@ message({
   - **Without `query`**: renders as plain Markdown prose in the chat and **skips the Inbox** (no Inbox item, no badge increment, no decision card).
   - **With `query`**: renders the body + an interactive decision card inline in the thread **and** queues it in the Inbox (incrementing the unresolved badge). End your turn if you need the user's answer before continuing; their reply is delivered back to this thread automatically.
 - **Cross-bot / cross-thread comms (`to`)**:
-  - `to: "<botId | projectId | botName>"`: sends an asynchronous attributed message to that bot (continuing its latest thread or spawning one automatically).
-  - `to: "thr_..."`: sends an asynchronous message directly to that thread.
+  - `to: "<botId | projectId | botName>"`: sends an asynchronous attributed message to that bot (continuing its last-viewed or latest thread, or spawning one automatically). It never lands in one of the bot's Special threads.
+  - `to: "thr_..."`: sends an asynchronous message directly to that thread, including a Special thread of any project.
+  - `to: "<Special thread name>"` (e.g. `"Lander"`): reaches a Special thread of your own project bot only. Use its thread ID to reach a Special thread of another project.
   - `to: "parent"`: sends an asynchronous message to the current thread's parent thread (errors if there is no parent).
 - **Rules**:
   - `query` is only valid when `to` is `"user"` (or omitted).

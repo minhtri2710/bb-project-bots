@@ -102,7 +102,8 @@ Promote any thread of a bot to a named role, or start a new one from the bot's *
 
 - **Standing instruction.** Added to the system prompt of every *other* thread of that bot, e.g. *"Before landing non-trivial changes, message Reviewer with your branch and a summary."*
 - **Role prompt.** Added only to the Special thread itself.
-- **Routing by name.** `message({ to: "Reviewer", text })` reaches the right thread. Names are unique per bot (case-insensitive). If a name also matches a bot, the call returns an error instead of guessing.
+- **Routing by name.** `message({ to: "Reviewer", text })` reaches the right thread. Names are unique per bot (case-insensitive) and resolve only within the sender's own project. If a name also matches a bot, the call returns an error instead of guessing.
+- **Routing by thread ID.** `message({ to: "thr_..." })` reaches a Special thread from any project. Messaging the bot itself (`to: botId`) never lands in a Special thread.
 - Special threads stay at the top of the bot's list with a colored icon and never auto-settle.
   - Archiving one demotes it.
   - Promoting never renames the underlying BB thread.

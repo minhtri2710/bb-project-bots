@@ -19,5 +19,5 @@ description: Work with Project Bots (automatic per-project file-backed bots in ~
 ## Inter-bot Messaging
 - `list_bots`: discover all project bots and unaffiliated bots (including `queuedFollowUpsCount`).
 - `inspect_bot`: inspect a bot's recent threads, recent turns, and **all queued follow-up messages** before messaging or re-steering it.
-- `message({ to, text })`: send an asynchronous attributed message to any bot (by bot ID, project ID, exact name, or thread ID). If the target bot has no active thread yet, a new thread is spawned automatically.
+- `message({ to, text })`: send an asynchronous attributed message to any bot (by bot ID, project ID, exact name, or thread ID). Messaging a bot never lands in one of its Special threads; if the bot has no other open thread, a new thread is spawned automatically. To reach a Special thread, use its name (own project only) or its exact thread ID (any project).
 - CLI equivalent: `bb project-bots list`, `bb project-bots inspect <target>`, and `bb project-bots message <target> "<message>" [--thread <id>]`.
