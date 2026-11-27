@@ -98,7 +98,7 @@ The **Inbox** nav panel (also reachable from the yellow sidebar badge or the com
   <img src="docs/screenshots/special.png" alt="Edit Special thread dialog with name, icon, accent, standing instruction, and role prompt" width="520">
 </p>
 
-Promote any thread of a bot to a named role, or start a new one from the bot's **+** button. Presets: **Reviewer**, **Lander**, **Deployer**, **Design Reviewer**, **Critic**.
+Promote any thread of a bot to a named role, or start a new one from the bot's **+** button. Agents can do the same with the `special_thread` tool. Presets: **Reviewer**, **Lander**, **Deployer**, **Design Reviewer**, **Critic**.
 
 - **Standing instruction.** Added to the system prompt of every *other* thread of that bot, e.g. *"Before landing non-trivial changes, message Reviewer with your branch and a summary."*
 - **Role prompt.** Added only to the Special thread itself.
@@ -136,6 +136,7 @@ Settled threads collect behind a small *N settled ▸* toggle under each bot.
 |---|---|
 | `message` | User prose, Inbox decisions, and bot or thread messaging |
 | `dismiss_message` | Withdraw an open Inbox question the calling thread asked |
+| `special_thread` | Create, promote/edit, or demote Special threads (own project bot; coordinators: any project bot) |
 | `update_memory_state` | Read and edit the bot's memory |
 | `list_bots` | Discover project bots and coordinator bots |
 | `inspect_bot` | See another bot's recent threads, turns and queued messages |

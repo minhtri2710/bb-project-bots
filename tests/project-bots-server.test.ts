@@ -683,6 +683,101 @@ describe("bb-project-bots server", () => {
     expect(JSON.stringify(again)).toContain("no longer open");
   });
 
+  it("special_thread tool: project bots manage only their own Special threads; coordinators manage any project bot's", async () => {
+    const { alpha, beta, threads, host, spawnMock } = await setup();
+    const alphaBotId = `projbot_${projectBotHash("/work/alpha")}`;
+    const betaBotId = `projbot_${projectBotHash("/work/beta")}`;
+    threads.set("thr_alpha", makeThreadResponse({ id: "thr_alpha", projectId: alpha.id }));
+    threads.set("thr_alpha_2", makeThreadResponse({ id: "thr_alpha_2", projectId: alpha.id }));
+    threads.set("thr_beta", makeThreadResponse({ id: "thr_beta", projectId: beta.id }));
+    const asAlpha = { threadId: "thr_alpha", projectId: alpha.id };
+    const call = (input: Record<string, unknown>, ctx = asAlpha) =>
+      host.harness.behavior.callAgentTool("special_thread", input, ctx);
+
+    const alphaCfg = await host.harness.behavior.resolveAgentConfiguration(
+      makePluginAgentConfigurationContext({ thread: { id: "thr_alpha" }, project: { id: alpha.id, kind: "standard", name: alpha.name } }),
+    );
+    expect(alphaCfg.tools.map((tool) => tool.name)).toContain("special_thread");
+
+    // Project bot creates a Special thread on itself (botId defaults to its own bot)
+    const created = JSON.parse(
+      String(await call({ action: "create", name: "Reviewer", icon: "shield", instruction: "Message Reviewer before landing." })),
+    ) as { threadId: string; special: { botId: string; name: string } };
+    expect(created.special).toMatchObject({ botId: alphaBotId, name: "Reviewer" });
+    expect(spawnMock).toHaveBeenCalledWith(expect.objectContaining({ projectId: alpha.id }));
+
+    // ...but not on another project's bot, by create, promote, or demote
+    await expect(call({ action: "create", botId: betaBotId, name: "Critic", icon: "flame", instruction: "Challenge." })).rejects.toThrow(
+      /only manage its own Special threads/,
+    );
+    await expect(call({ action: "set", threadId: "thr_beta", botId: betaBotId, name: "Lander", icon: "merge", instruction: "Land." })).rejects.toThrow(
+      /only manage its own Special threads/,
+    );
+    await host.harness.behavior.callRpc("special_thread_set", {
+      threadId: "thr_beta",
+      botId: betaBotId,
+      name: "Lander",
+      icon: "merge",
+      instruction: "Land.",
+    });
+    await expect(call({ action: "remove", threadId: "thr_beta" })).rejects.toThrow(/only manage its own Special threads/);
+
+    // Name stays unique per bot (case-insensitive) and the 4000-character limit holds
+    await expect(call({ action: "set", threadId: "thr_alpha_2", name: "reviewer", icon: "shield", instruction: "Dup." })).rejects.toThrow(
+      /already exists/,
+    );
+    await expect(call({ action: "set", threadId: "thr_alpha_2", name: "Deployer", icon: "rocket", instruction: "x".repeat(4001) })).rejects.toThrow(
+      /4000/,
+    );
+
+    // create never promotes: a threadId is rejected instead of silently spawning a new thread
+    await expect(call({ action: "create", threadId: "thr_alpha_2", name: "Deployer", icon: "rocket", instruction: "Deploy." })).rejects.toThrow(
+      /use action "set"/,
+    );
+
+    // set edits an existing Special thread, keeping omitted fields; an empty color clears the accent
+    await call({ action: "set", threadId: created.threadId, color: "#22c55e" });
+    const edited = JSON.parse(
+      String(await call({ action: "set", threadId: created.threadId, instruction: "Message Reviewer with the diff.", color: "" })),
+    ) as { name: string; icon: string; instruction: string; color?: string };
+    expect(edited).toMatchObject({ name: "Reviewer", icon: "shield", instruction: "Message Reviewer with the diff." });
+    expect(edited.color).toBeUndefined();
+
+    // Coordinator manages any project bot's Special threads, but must name the bot and it must be a project bot
+    const chief = (await host.harness.behavior.callRpc("bot_create_unaffiliated", {
+      name: "Chief",
+      role: "Coordinator",
+      avatar: { color: "#6d5efc", shape: "blob", expression: "curious", motion: "calm" },
+    })) as BotRecordDto;
+    const chiefThread = (await host.harness.behavior.callRpc("conversation_create", {
+      kind: "unaffiliated",
+      botId: chief.id,
+      request: {
+        projectId: "proj_personal",
+        providerId: "pi",
+        model: "test",
+        reasoningLevel: "high",
+        permissionMode: "accept-edits",
+        executionInputSources: {},
+        environment: { type: "host", hostId: "host_1", workspace: { type: "personal" } },
+        input: [{ type: "text", text: "Coordinate Special threads", mentions: [] }],
+      },
+    })) as { threadId: string };
+    const asChief = { threadId: chiefThread.threadId, projectId: "proj_personal" };
+    await expect(call({ action: "create", name: "Critic", icon: "flame", instruction: "Challenge." }, asChief)).rejects.toThrow(/botId is required/);
+    await expect(call({ action: "create", botId: chief.id, name: "Critic", icon: "flame", instruction: "Challenge." }, asChief)).rejects.toThrow(
+      /project-specific/,
+    );
+    const promoted = JSON.parse(
+      String(await call({ action: "set", threadId: "thr_alpha_2", name: "Deployer", icon: "rocket", instruction: "Deploy." }, asChief)),
+    ) as { botId: string; name: string };
+    expect(promoted).toMatchObject({ botId: alphaBotId, name: "Deployer" });
+    expect(JSON.parse(String(await call({ action: "remove", threadId: "thr_beta" }, asChief)))).toEqual({ threadId: "thr_beta", removed: true });
+
+    const state = (await host.harness.behavior.callRpc("sidebar_state", null)) as { specialThreads: Array<{ threadId: string }> };
+    expect(state.specialThreads.map((s) => s.threadId).sort()).toEqual([created.threadId, "thr_alpha_2"].sort());
+  });
+
   it("ignores malformed specialThreads and threadOrder entries in .state.json", async () => {
     const { rootDir, host } = await setup();
     const { writeFileSync } = await import("node:fs");

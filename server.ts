@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
+import { z } from "zod";
 import {
   dismissMessageToolSchema,
   inspectBotToolSchema,
@@ -7,6 +8,11 @@ import {
   memoryToolSchema,
   messageToolSchema,
   rpcContract,
+  specialThreadCreateInputSchema,
+  specialThreadSetInputSchema,
+  specialThreadToolSchema,
+  type SpecialThreadCreateInput,
+  type SpecialThreadSetInput,
 } from "./contract";
 import { buildBotInstructions, MEMORY_TOOL_GUIDANCE } from "./lib/bot-instructions";
 import { createBotStore, type BotRecord, type ProjectSummary } from "./lib/bot-store";
@@ -171,7 +177,7 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
 
     function configForBot(bot: BotRecord, currentThreadId?: string) {
       return {
-        tools: ["update_memory_state", "list_bots", "inspect_bot", "message", "dismiss_message"],
+        tools: ["update_memory_state", "list_bots", "inspect_bot", "message", "dismiss_message", "special_thread"],
         skills: ["project-bots", "inbox"],
         instructions: buildBotInstructions(bot, {
           currentThreadId,
@@ -256,6 +262,101 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
       },
       parameters: dismissMessageToolSchema,
       execute: (input, ctx) => inbox.executeDismissTool(input, ctx),
+    });
+
+    bb.agents.registerTool({
+      name: "special_thread",
+      description:
+        "Create, promote/edit, or demote a Special thread (a named role such as Reviewer or Lander) on a project bot. Project bots manage only their own Special threads; coordinator bots can manage any project bot's.",
+      instructions:
+        "Use `special_thread` when a project would benefit from a standing role thread. Its `instruction` is injected into every other thread of that bot, so keep it short and actionable, and confirm with the user before adding or changing a role they did not ask for.",
+      presentation: {
+        label: {
+          pending: "Updating Special thread",
+          completed: "Updated Special thread",
+        },
+        icon: { glyph: "Sparkles" },
+      },
+      parameters: specialThreadToolSchema,
+      execute: async (input, ctx) => {
+        const caller = await resolveThreadBot(bb, store, ctx.threadId, false);
+        if (!caller) throw new Error("This conversation does not belong to a project bot or coordinator bot.");
+        const ownerBotId = async (selector: string | null | undefined): Promise<string> => {
+          if (!selector) {
+            if (caller.kind !== "project") throw new Error("botId is required: pass the project bot to manage.");
+            return caller.bot.id;
+          }
+          const target = await findBotTarget(bb, store, selector);
+          if (target.kind !== "project") {
+            throw new Error("Special threads are project-specific and can only be created on project bots.");
+          }
+          return target.bot.id;
+        };
+        const authorize = (botId: string) => {
+          if (caller.kind === "project" && botId !== caller.bot.id) {
+            throw new Error(
+              `Project bot ${caller.bot.name} (${caller.bot.id}) can only manage its own Special threads, not those of ${botId}.`,
+            );
+          }
+        };
+        const parse = <T,>(schema: z.ZodType<T>, value: unknown): T => {
+          const result = schema.safeParse(value);
+          if (!result.success) throw new Error(z.prettifyError(result.error));
+          return result.data;
+        };
+        const fields = {
+          name: input.name ?? undefined,
+          icon: input.icon ?? undefined,
+          color: input.color ?? undefined,
+          instruction: input.instruction ?? undefined,
+          rolePrompt: input.rolePrompt ?? undefined,
+        };
+
+        if (input.action === "create") {
+          if (input.threadId) {
+            throw new Error('create always starts a new thread; use action "set" with threadId to promote an existing thread.');
+          }
+          const botId = await ownerBotId(input.botId);
+          authorize(botId);
+          const created = await createSpecialThread(parse(specialThreadCreateInputSchema, { botId, ...fields }));
+          return JSON.stringify(created);
+        }
+
+        if (!input.threadId) throw new Error(`threadId is required for action "${input.action}".`);
+        const existing = store.getSpecialThread(input.threadId);
+
+        if (input.action === "remove") {
+          if (!existing) throw new Error(`Thread "${input.threadId}" is not a Special thread.`);
+          authorize(existing.botId);
+          demoteSpecialThread(existing.threadId);
+          return JSON.stringify({ threadId: existing.threadId, removed: true });
+        }
+
+        let botId: string;
+        if (input.botId) botId = await ownerBotId(input.botId);
+        else if (existing) botId = existing.botId;
+        else {
+          const owner = await resolveThreadBot(bb, store, input.threadId, false);
+          if (!owner) throw new Error(`Thread "${input.threadId}" does not belong to any bot.`);
+          if (owner.kind !== "project") {
+            throw new Error("Special threads are project-specific and can only be created on project bots.");
+          }
+          botId = owner.bot.id;
+        }
+        authorize(botId);
+        const merged = {
+          threadId: input.threadId,
+          botId,
+          name: fields.name ?? existing?.name,
+          icon: fields.icon ?? existing?.icon,
+          // An empty color clears the accent.
+          color: fields.color === "" ? undefined : (fields.color ?? existing?.color),
+          instruction: fields.instruction ?? existing?.instruction,
+          rolePrompt: fields.rolePrompt ?? existing?.rolePrompt,
+        };
+        const record = await promoteSpecialThread(parse(specialThreadSetInputSchema, merged));
+        return JSON.stringify(record);
+      },
     });
 
     // 1. update_memory_state: manages the bot's markdown file directly
@@ -607,6 +708,86 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
       },
     });
 
+    // Special thread operations shared by the sidebar RPCs and the special_thread agent tool
+    async function promoteSpecialThread(input: SpecialThreadSetInput) {
+      const thread = await bb.sdk.threads.get({ threadId: input.threadId });
+      if (!thread || thread.deletedAt !== null) {
+        throw new Error(`Thread "${input.threadId}" not found.`);
+      }
+      if (thread.archivedAt !== null) {
+        throw new Error(`Cannot promote archived thread "${input.threadId}".`);
+      }
+      const resolved = await resolveThreadBot(bb, store, input.threadId, false);
+      if (!resolved) {
+        throw new Error(`Thread "${input.threadId}" does not belong to any bot.`);
+      }
+      if (resolved.kind !== "project") {
+        throw new Error("Special threads are project-specific and can only be created on project bots.");
+      }
+      if (resolved.bot.id !== input.botId) {
+        throw new Error(
+          `Thread "${input.threadId}" belongs to bot "${resolved.bot.name}" (${resolved.bot.id}), not "${input.botId}".`,
+        );
+      }
+      const { record } = store.setSpecialThread({
+        ...input,
+        botId: resolved.bot.id,
+      });
+      publish();
+      return record;
+    }
+
+    async function createSpecialThread(input: SpecialThreadCreateInput) {
+      const projects = await listStandardProjects(bb);
+      const matched = projects.find((project) => {
+        const bot = store.readProjectBot(project);
+        return bot.id === input.botId || project.id === input.botId;
+      });
+      if (!matched) {
+        throw new Error(
+          "Special threads are project-specific and can only be created on project bots.",
+        );
+      }
+      const { bot } = store.ensureProjectBot(matched);
+      const lowerName = input.name.trim().toLowerCase();
+      const duplicate = store
+        .listSpecialThreadsForBot(bot.id)
+        .find((s) => s.name.toLowerCase() === lowerName);
+      if (duplicate) {
+        throw new Error(
+          `A Special thread named "${duplicate.name}" (${duplicate.threadId}) already exists on this bot. Pick a unique name.`,
+        );
+      }
+
+      const trimmedName = input.name.trim();
+      const rolePart = input.rolePrompt?.trim()
+        ? `\n\n${input.rolePrompt.trim()}`
+        : "";
+      const thread = await bb.sdk.threads.spawn({
+        projectId: matched.id,
+        environment: { type: "project-default" },
+        title: trimmedName,
+        prompt: `You have been created as the **${trimmedName}** Special thread for ${matched.name}.${rolePart}\n\nAcknowledge briefly that you are ready.`,
+      });
+      const { record } = store.setSpecialThread({
+        threadId: thread.id,
+        botId: bot.id,
+        name: trimmedName,
+        icon: input.icon,
+        color: input.color,
+        instruction: input.instruction,
+        rolePrompt: input.rolePrompt,
+      });
+      store.rememberViewed(bot.id, thread.id);
+      publish();
+      return { threadId: thread.id, special: record };
+    }
+
+    function demoteSpecialThread(threadId: string) {
+      store.removeSpecialThread(threadId);
+      publish();
+    }
+
     // RPC handlers for the sidebar app
     bb.rpc.register(rpcContract, {
       sidebar_state: async () => {
@@ -664,83 +845,12 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
         return { botId, threadIds: saved };
       },
 
-      special_thread_set: async (input) => {
-        const thread = await bb.sdk.threads.get({ threadId: input.threadId });
-        if (!thread || thread.deletedAt !== null) {
-          throw new Error(`Thread "${input.threadId}" not found.`);
-        }
-        if (thread.archivedAt !== null) {
-          throw new Error(`Cannot promote archived thread "${input.threadId}".`);
-        }
-        const resolved = await resolveThreadBot(bb, store, input.threadId, false);
-        if (!resolved) {
-          throw new Error(`Thread "${input.threadId}" does not belong to any bot.`);
-        }
-        if (resolved.kind !== "project") {
-          throw new Error("Special threads are project-specific and can only be created on project bots.");
-        }
-        if (resolved.bot.id !== input.botId) {
-          throw new Error(
-            `Thread "${input.threadId}" belongs to bot "${resolved.bot.name}" (${resolved.bot.id}), not "${input.botId}".`,
-          );
-        }
-        const { record } = store.setSpecialThread({
-          ...input,
-          botId: resolved.bot.id,
-        });
-        publish();
-        return record;
-      },
+      special_thread_set: (input) => promoteSpecialThread(input),
 
-      special_thread_create: async (input) => {
-        const projects = await listStandardProjects(bb);
-        const matched = projects.find((project) => {
-          const bot = store.readProjectBot(project);
-          return bot.id === input.botId || project.id === input.botId;
-        });
-        if (!matched) {
-          throw new Error(
-            "Special threads are project-specific and can only be created on project bots.",
-          );
-        }
-        const { bot } = store.ensureProjectBot(matched);
-        const lowerName = input.name.trim().toLowerCase();
-        const duplicate = store
-          .listSpecialThreadsForBot(bot.id)
-          .find((s) => s.name.toLowerCase() === lowerName);
-        if (duplicate) {
-          throw new Error(
-            `A Special thread named "${duplicate.name}" (${duplicate.threadId}) already exists on this bot. Pick a unique name.`,
-          );
-        }
-
-        const trimmedName = input.name.trim();
-        const rolePart = input.rolePrompt?.trim()
-          ? `\n\n${input.rolePrompt.trim()}`
-          : "";
-        const thread = await bb.sdk.threads.spawn({
-          projectId: matched.id,
-          environment: { type: "project-default" },
-          title: trimmedName,
-          prompt: `You have been created as the **${trimmedName}** Special thread for ${matched.name}.${rolePart}\n\nAcknowledge briefly that you are ready.`,
-        });
-        const { record } = store.setSpecialThread({
-          threadId: thread.id,
-          botId: bot.id,
-          name: trimmedName,
-          icon: input.icon,
-          color: input.color,
-          instruction: input.instruction,
-          rolePrompt: input.rolePrompt,
-        });
-        store.rememberViewed(bot.id, thread.id);
-        publish();
-        return { threadId: thread.id, special: record };
-      },
+      special_thread_create: (input) => createSpecialThread(input),
 
       special_thread_remove: async ({ threadId }) => {
-        store.removeSpecialThread(threadId);
-        publish();
+        demoteSpecialThread(threadId);
         return { ok: true as const };
       },
 

@@ -131,6 +131,36 @@ export const specialThreadSchema = z.object({
 }).strict();
 export type SpecialThreadDto = z.infer<typeof specialThreadSchema>;
 
+const specialThreadFields = {
+  name: z.string().trim().min(1).max(80),
+  icon: z.enum(SPECIAL_THREAD_ICON_IDS),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  instruction: z.string().trim().min(1).max(4000),
+  rolePrompt: z.string().trim().max(4000).optional(),
+};
+export const specialThreadSetInputSchema = z.object({ threadId: id, botId: id, ...specialThreadFields }).strict();
+export type SpecialThreadSetInput = z.infer<typeof specialThreadSetInputSchema>;
+export const specialThreadCreateInputSchema = z.object({ botId: id, ...specialThreadFields }).strict();
+export type SpecialThreadCreateInput = z.infer<typeof specialThreadCreateInputSchema>;
+
+export const specialThreadToolSchema = z.object({
+  action: z.enum(["create", "set", "remove"]).describe(
+    "create: start a new thread with this role (takes no threadId); set: promote an existing thread or edit a Special thread (omitted fields keep their current values); remove: demote a Special thread back to a regular thread.",
+  ),
+  botId: z.string().trim().min(1).nullish().describe(
+    "Project bot that owns the Special thread (bot ID or project ID). For create it defaults to your own project bot (coordinator bots must pass it); for set and remove it defaults to the thread's bot.",
+  ),
+  threadId: z.string().trim().min(1).nullish().describe("Required for set and remove: the thread to promote, edit, or demote."),
+  name: z.string().nullish().describe("Role name, unique per bot (case-insensitive), max 80 characters. Others reach it with message({ to: name })."),
+  icon: z.enum(SPECIAL_THREAD_ICON_IDS).nullish().describe("Sidebar icon."),
+  color: z.string().nullish().describe("Accent color as #rrggbb. Pass an empty string to clear it."),
+  instruction: z.string().nullish().describe(
+    "Standing instruction added to every other thread of the bot, max 4000 characters.",
+  ),
+  rolePrompt: z.string().nullish().describe("Prompt added only to the Special thread itself, max 4000 characters. Pass an empty string to clear it."),
+}).strict();
+export type SpecialThreadToolInput = z.infer<typeof specialThreadToolSchema>;
+
 // --- Decision Inbox & unified message({ text, to?, query? }) schemas ---
 
 export const optionSchema = z.object({
@@ -306,26 +336,11 @@ export const rpcContract = defineRpcContract({
     output: z.object({ botId: id, threadIds: z.array(id) }).strict(),
   },
   special_thread_set: {
-    input: z.object({
-      threadId: id,
-      botId: id,
-      name: z.string().trim().min(1).max(80),
-      icon: z.enum(SPECIAL_THREAD_ICON_IDS),
-      color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-      instruction: z.string().trim().min(1).max(4000),
-      rolePrompt: z.string().trim().max(4000).optional(),
-    }).strict(),
+    input: specialThreadSetInputSchema,
     output: specialThreadSchema,
   },
   special_thread_create: {
-    input: z.object({
-      botId: id,
-      name: z.string().trim().min(1).max(80),
-      icon: z.enum(SPECIAL_THREAD_ICON_IDS),
-      color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-      instruction: z.string().trim().min(1).max(4000),
-      rolePrompt: z.string().trim().max(4000).optional(),
-    }).strict(),
+    input: specialThreadCreateInputSchema,
     output: z.object({
       threadId: id,
       special: specialThreadSchema,
