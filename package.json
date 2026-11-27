@@ -54,7 +54,7 @@
     "sonner": "^1.7.4",
     "tailwind-merge": "^3.7.0",
     "typescript": "^5.7.0",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   },
   "allowScripts": {
     "better-sqlite3": true
