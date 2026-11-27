@@ -628,6 +628,47 @@ describe("bb-project-bots server", () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
+  it("viewing or creating a Special thread keeps routing on the bot's last working thread", async () => {
+    const { alpha, beta, threads, host, sendMock } = await setup();
+    const alphaBotId = `projbot_${projectBotHash("/work/alpha")}`;
+    threads.set("thr_work", makeThreadResponse({ id: "thr_work", projectId: alpha.id, updatedAt: 10 }));
+    threads.set("thr_newer", makeThreadResponse({ id: "thr_newer", projectId: alpha.id, updatedAt: 30 }));
+    threads.set("thr_lander", makeThreadResponse({ id: "thr_lander", projectId: alpha.id, updatedAt: 40 }));
+    threads.set("thr_beta", makeThreadResponse({ id: "thr_beta", projectId: beta.id }));
+    await host.harness.behavior.callRpc("special_thread_set", {
+      threadId: "thr_lander",
+      botId: alphaBotId,
+      name: "Lander",
+      icon: "merge",
+      instruction: "Message Lander to merge.",
+    });
+    const toAlpha = async () =>
+      (JSON.parse(
+        String(await host.harness.behavior.callAgentTool("message", { to: alphaBotId, text: "Status?" }, { threadId: "thr_beta", projectId: beta.id })),
+      ) as { threadId: string }).threadId;
+
+    await host.harness.behavior.callRpc("conversation_viewed", { threadId: "thr_work" });
+    await host.harness.behavior.callRpc("conversation_viewed", { threadId: "thr_lander" });
+    expect(await toAlpha()).toBe("thr_work");
+
+    const created = (await host.harness.behavior.callRpc("special_thread_create", {
+      botId: alphaBotId,
+      name: "Reviewer",
+      icon: "shield",
+      instruction: "Message Reviewer before landing.",
+    })) as { threadId: string };
+    expect(await toAlpha()).toBe("thr_work");
+    expect(sendMock).toHaveBeenCalledTimes(2);
+
+    // The sidebar still reopens the Special thread the user last viewed
+    const state = (await host.harness.behavior.callRpc("sidebar_state", null)) as { lastViewed: Array<{ botId: string; threadId: string }> };
+    expect(state.lastViewed.find((v) => v.botId === alphaBotId)?.threadId).toBe(created.threadId);
+
+    // Demoting the Special thread the user is on makes it the routing thread
+    await host.harness.behavior.callRpc("special_thread_remove", { threadId: created.threadId });
+    expect(await toAlpha()).toBe(created.threadId);
+  });
+
   it("dismiss_message lets an agent dismiss only Inbox questions its own thread asked", async () => {
     const { alpha, threads, host } = await setup();
     threads.set("thr_asker", makeThreadResponse({ id: "thr_asker", projectId: alpha.id }));

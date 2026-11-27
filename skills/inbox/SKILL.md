@@ -38,7 +38,7 @@ message({
   - **With `query`**: renders the body + an interactive decision card inline in the thread **and** queues it in the Inbox (incrementing the unresolved badge). End your turn if you need the user's answer before continuing; their reply is delivered back to this thread automatically.
   - **Withdrawing a question**: when an open question no longer needs an answer (you resolved it, or the plan changed), call `dismiss_message({ messageId })` with the `id` that `message` returned. Only questions asked by your own thread can be dismissed; your open questions are listed as `message #N` in your instructions.
 - **Cross-bot / cross-thread comms (`to`)**:
-  - `to: "<botId | projectId | botName>"`: sends an asynchronous attributed message to that bot (continuing its last-viewed or latest thread, or spawning one automatically). It never lands in one of the bot's Special threads.
+  - `to: "<botId | projectId | botName>"`: sends an asynchronous attributed message to that bot (continuing the bot's last regular thread opened in the sidebar or started by a message, else its latest regular thread, or spawning one automatically). It never lands in one of the bot's Special threads, even if a Special thread was viewed last.
   - `to: "thr_..."`: sends an asynchronous message directly to that thread, including a Special thread of any project.
   - `to: "<Special thread name>"` (e.g. `"Lander"`): reaches a Special thread of your own project bot only. Use its thread ID to reach a Special thread of another project.
   - `to: "parent"`: sends an asynchronous message to the current thread's parent thread (errors if there is no parent).

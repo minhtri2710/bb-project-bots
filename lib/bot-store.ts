@@ -77,6 +77,8 @@ export type SpecialThreadRecord = SpecialThreadDto;
 type RuntimeState = {
   threadBindings: Record<string, string>;
   lastViewed: Record<string, string>;
+  // Per bot: the last regular (non-Special) thread opened in the sidebar or started by this plugin; message({ to: botId }) routes here.
+  routingThreads: Record<string, string>;
   lastUsedAt: Record<string, number>;
   pinnedBotIds: string[];
   settledBotIds: string[];
@@ -170,6 +172,7 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
       return {
         threadBindings: {},
         lastViewed: {},
+        routingThreads: {},
         lastUsedAt: {},
         pinnedBotIds: [],
         settledBotIds: [],
@@ -210,6 +213,7 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
       return {
         threadBindings: parsed.threadBindings && typeof parsed.threadBindings === "object" ? parsed.threadBindings : {},
         lastViewed: parsed.lastViewed && typeof parsed.lastViewed === "object" ? parsed.lastViewed : {},
+        routingThreads: parsed.routingThreads && typeof parsed.routingThreads === "object" ? parsed.routingThreads : {},
         lastUsedAt: parsed.lastUsedAt && typeof parsed.lastUsedAt === "object" ? parsed.lastUsedAt : {},
         pinnedBotIds: Array.isArray(parsed.pinnedBotIds) ? parsed.pinnedBotIds.filter((x): x is string => typeof x === "string") : [],
         settledBotIds: Array.isArray(parsed.settledBotIds) ? parsed.settledBotIds.filter((x): x is string => typeof x === "string") : [],
@@ -229,6 +233,7 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
       return {
         threadBindings: {},
         lastViewed: {},
+        routingThreads: {},
         lastUsedAt: {},
         pinnedBotIds: [],
         settledBotIds: [],
@@ -475,6 +480,10 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
       delete state.lastViewed[botId];
       changed = true;
     }
+    if (state.routingThreads[botId]) {
+      delete state.routingThreads[botId];
+      changed = true;
+    }
     if (state.lastUsedAt[botId]) {
       delete state.lastUsedAt[botId];
       changed = true;
@@ -530,6 +539,7 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
     const now = Date.now();
     const viewChanged = state.lastViewed[botId] !== threadId;
     state.lastViewed[botId] = threadId;
+    if (!state.specialThreads[threadId]) state.routingThreads[botId] = threadId;
     state.lastUsedAt[botId] = Math.max(now, state.lastUsedAt[botId] ?? 0);
     saveState(state);
     return viewChanged;
@@ -693,8 +703,8 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
     return val;
   }
 
-  function lastViewedThreadId(botId: string): string | null {
-    return loadState().lastViewed[botId] ?? null;
+  function routingThreadId(botId: string): string | null {
+    return loadState().routingThreads[botId] ?? null;
   }
 
   function allLastViewed(): Array<{ botId: string; threadId: string }> {
@@ -786,8 +796,11 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
 
   function removeSpecialThread(threadId: string): boolean {
     const state = loadState();
-    if (!(threadId in state.specialThreads)) return false;
+    const record = state.specialThreads[threadId];
+    if (!record) return false;
     delete state.specialThreads[threadId];
+    // The demoted thread is regular again; if the user is on it, route there.
+    if (state.lastViewed[record.botId] === threadId) state.routingThreads[record.botId] = threadId;
     saveState(state);
     return true;
   }
@@ -843,7 +856,7 @@ export function createBotStore(rootDir: string = defaultRootDir()) {
     threadBinding,
     allBindings,
     rememberViewed,
-    lastViewedThreadId,
+    routingThreadId,
     allLastViewed,
     touchUsed,
     allLastUsedAt,

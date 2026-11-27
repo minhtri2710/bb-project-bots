@@ -172,7 +172,7 @@ export async function listAllBots(bb: BbPluginApi, store: BotStore): Promise<Lis
     const botThreads = (threadsByBot.get(bot.id) ?? []).sort((a, b) => b.updatedAt - a.updatedAt);
     // Special threads serve a named role; routing by bot never lands in one.
     const routable = botThreads.filter((t) => !specialThreadIds.has(t.id));
-    const remembered = store.lastViewedThreadId(bot.id);
+    const remembered = store.routingThreadId(bot.id);
     const defaultThreadId =
       (remembered && routable.some((t) => t.id === remembered) ? remembered : null) ??
       routable[0]?.id ??
