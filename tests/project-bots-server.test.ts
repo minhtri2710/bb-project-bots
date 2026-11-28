@@ -953,4 +953,33 @@ describe("bb-project-bots server", () => {
     expect(sameProject.threadId).toBe(created.threadId);
     expect(sendMock).toHaveBeenCalledTimes(1);
   });
+
+  it("skips a scheduled lifecycle sweep while the previous one is still running", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "pb-sweep-guard-"));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const list = vi.fn(async () => {
+      await gate;
+      return [];
+    });
+    const host = createFakePluginHost({
+      pluginId: "bb-project-bots",
+      settings: { autoArchiveSettled: true },
+      sdk: { projects: { list: async () => [] }, threads: { list } },
+    });
+    await createProjectBotsServer({ rootDir })(host.bb);
+    cleanups.push(async () => {
+      await host.harness.lifecycle.dispose();
+      rmSync(rootDir, { recursive: true, force: true });
+    });
+    const before = list.mock.calls.length;
+    const first = host.harness.runSchedule("lifecycle-sweep");
+    await vi.waitFor(() => expect(list.mock.calls.length).toBe(before + 1));
+    await host.harness.runSchedule("lifecycle-sweep");
+    expect(list.mock.calls.length).toBe(before + 1);
+    release();
+    await first;
+    await host.harness.runSchedule("lifecycle-sweep");
+    expect(list.mock.calls.length).toBe(before + 2);
+  });
 });

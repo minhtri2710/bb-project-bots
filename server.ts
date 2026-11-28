@@ -16,6 +16,7 @@ import {
 } from "./contract";
 import { buildBotInstructions, MEMORY_TOOL_GUIDANCE } from "./lib/bot-instructions";
 import { createBotStore, type BotRecord, type ProjectSummary } from "./lib/bot-store";
+import { HOUR_MS } from "./lib/completion";
 import { DREAM_MARKER, runDreamForBot, runDreamSweep } from "./lib/dream-runner";
 import { createInboxService } from "./lib/inbox-server";
 import { runLifecycleSweep } from "./lib/lifecycle-sweep";
@@ -526,9 +527,23 @@ export function createProjectBotsServer(options?: { rootDir?: string }) {
     });
 
     // Automatic lifecycle sweep (auto-archive settled threads, auto-delete archived threads, auto-delete empty projects)
+    // A slow sweep must not overlap the next tick: two sweeps would act on each other's stale reads.
+    // shortcut: a sweep running over an hour counts as hung and no longer blocks; pass an AbortSignal
+    // to its SDK calls if hangs show up in the log.
+    let sweepStartedAt: number | null = null;
     bb.background.schedule("lifecycle-sweep", "*/15 * * * *", async () => {
-      const currentSettings = await readPluginSettings();
-      await runLifecycleSweep(bb, store, currentSettings, publish);
+      if (sweepStartedAt !== null && Date.now() - sweepStartedAt < HOUR_MS) {
+        bb.log.warn("lifecycle-sweep: skipped this run: the previous sweep is still running");
+        return;
+      }
+      const startedAt = Date.now();
+      sweepStartedAt = startedAt;
+      try {
+        const currentSettings = await readPluginSettings();
+        await runLifecycleSweep(bb, store, currentSettings, publish);
+      } finally {
+        if (sweepStartedAt === startedAt) sweepStartedAt = null;
+      }
     });
 
     // CLI: bb project-bots list | message
